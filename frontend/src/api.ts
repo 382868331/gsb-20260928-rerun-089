@@ -12,6 +12,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  program: () => request<Program>('/api/program'),
   state: () => request<ControllerState>('/api/state'),
   start: () => request<ControllerState>('/api/start', { method: 'POST' }),
   pause: () => request<ControllerState>('/api/pause', { method: 'POST' }),

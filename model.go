@@ -39,6 +39,7 @@ type ControllerState struct {
 type TimerState struct {
 	ElapsedMs int  `json:"elapsedMs"`
 	Q         bool `json:"q"`
+	PresetMs  int  `json:"presetMs"`
 }
 
 type ScanEvent struct {

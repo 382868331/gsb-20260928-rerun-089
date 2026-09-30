@@ -1,4 +1,4 @@
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import type { NodeKind } from './types';
 
 const inputsByKind: Partial<Record<NodeKind, string[]>> = {
@@ -20,16 +20,38 @@ const kindColor: Record<NodeKind, string> = {
   TON: '#ca8a04',
 };
 
-type NodeData = {
+export type ControlNodeData = {
   label: string;
   kind: NodeKind;
   presetMs?: number;
   active?: boolean;
 };
 
-export function ControlNodeView({ data }: NodeProps) {
-  const node = data as unknown as NodeData;
+export function ControlNodeView({ id, data }: NodeProps) {
+  const node = data as unknown as ControlNodeData;
+  const { setNodes } = useReactFlow();
   const inputPorts = inputsByKind[node.kind] ?? [];
+
+  const rename = () => {
+    const label = window.prompt('元件名称', node.label);
+    if (label?.trim()) {
+      setNodes((current) => current.map((item) => (
+        item.id === id ? { ...item, data: { ...item.data, label: label.trim() } } : item
+      )));
+    }
+  };
+
+  const changePreset = () => {
+    if (node.kind !== 'TON') return;
+    const raw = window.prompt('延时预设（毫秒，必须大于 0）', String(node.presetMs ?? 1000));
+    const presetMs = Number(raw);
+    if (raw !== null && Number.isInteger(presetMs) && presetMs > 0) {
+      setNodes((current) => current.map((item) => (
+        item.id === id ? { ...item, data: { ...item.data, presetMs } } : item
+      )));
+    }
+  };
+
   return (
     <div className={`control-node ${node.active ? 'active' : ''}`} style={{ borderColor: kindColor[node.kind] }}>
       {inputPorts.map((port, index) => (
@@ -42,9 +64,14 @@ export function ControlNodeView({ data }: NodeProps) {
           style={{ top: `${((index + 1) / (inputPorts.length + 1)) * 100}%` }}
         />
       ))}
-      <div className="node-kind" style={{ background: kindColor[node.kind] }}>{node.kind}</div>
-      <div className="node-label">{node.label}</div>
-      {node.presetMs ? <div className="node-meta">预设 {node.presetMs}ms</div> : null}
+      <div className="node-head">
+        <span className="node-kind" style={{ background: kindColor[node.kind] }}>{node.kind}</span>
+        <button className="node-edit" title="双击节点可改名" onClick={rename}>改名</button>
+      </div>
+      <div className="node-label" onDoubleClick={rename} title="双击改名">{node.label}</div>
+      {node.kind === 'TON' ? (
+        <button className="node-meta" onClick={changePreset}>预设 {node.presetMs ?? 0}ms（点击修改）</button>
+      ) : null}
       {inputPorts.map((port) => <span key={port} className={`port-label left ${port}`}>{port}</span>)}
       {node.kind !== 'OUTPUT' && (
         <>

@@ -31,6 +31,6 @@ export interface ControllerState {
   inputs: Record<string, boolean>;
   internals: Record<string, unknown>;
   outputs: Record<string, boolean>;
-  timers: Record<string, { elapsedMs: number; q: boolean }>;
+  timers: Record<string, { elapsedMs: number; q: boolean; presetMs: number }>;
   log: Array<{ scan: number; message: string }>;
 }

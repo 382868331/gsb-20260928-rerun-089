@@ -187,49 +187,71 @@ func NewController(program Program) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	controller := &Controller{
-		mode:    "stopped",
-		version: 1,
-		program: compiled,
-		inputs:  map[string]bool{},
-		values:  map[string]bool{},
-		timers:  map[string]TimerState{},
-	}
-	for id := range compiled.inputs {
-		controller.inputs[id] = false
-	}
-	for _, node := range compiled.nodes {
-		if node.Kind == "TON" {
-			controller.timers[node.ID] = TimerState{}
-		}
-	}
+	controller := &Controller{mode: "stopped", version: 1}
+	controller.applyCompiled(compiled, nil, nil, nil)
 	controller.addLog("新版本程序已载入，等待启动")
 	return controller, nil
 }
 
+// Load 发布一个通过完整校验的新版本程序。
+//
+// 状态迁移规则对 stopped/paused/running 三种模式相同：
+//   - 扫描计数清零，所有锁存(SR)和组合逻辑内部值复位；
+//   - 输入仅保留新版本中仍存在且 id 相同的 INPUT 节点的当前采样值，其余回到 false；
+//   - TON 定时器仅在新旧程序中存在相同 id 的 TON 节点时保留 ElapsedMs/Q（暂停时发布也一样），
+//     预设值变化时按新预设重算 Q；被删除或改型的定时器状态不复用，新定时器从零开始。
+//
+// 暂停时发布新版本后模式保持 paused，保留的定时器继续冻结，启动后接着计时。
+// 校验失败时返回错误，当前程序及其运行状态完全不受影响。
 func (c *Controller) Load(program Program) error {
 	compiled, err := compileProgram(program)
 	if err != nil {
 		return err
 	}
-	c.program = compiled
+	previousNodes := c.program.nodes
 	c.version++
-	c.mode = "stopped"
-	c.inputs = map[string]bool{}
-	c.values = map[string]bool{}
-	c.timers = map[string]TimerState{}
 	c.scans = 0
+	c.applyCompiled(compiled, previousNodes, c.inputs, c.timers)
+	c.addLog(fmt.Sprintf("编辑后的程序已作为 v%d 载入，模式保持 %s；同 id 的 TON 定时器状态按规则迁移", c.version, c.mode))
+	return nil
+}
+
+func (c *Controller) applyCompiled(
+	compiled *CompiledProgram,
+	previousNodes map[string]Node,
+	previousInputs map[string]bool,
+	previousTimers map[string]TimerState,
+) {
+	c.program = compiled
+	c.values = map[string]bool{}
+	c.inputs = map[string]bool{}
+	c.timers = map[string]TimerState{}
 	c.log = nil
 	for id := range compiled.inputs {
 		c.inputs[id] = false
-	}
-	for _, node := range compiled.nodes {
-		if node.Kind == "TON" {
-			c.timers[node.ID] = TimerState{}
+		if previousInputs != nil {
+			c.inputs[id] = previousInputs[id]
 		}
 	}
-	c.addLog("编辑后的程序已作为新版本载入")
-	return nil
+	for _, node := range compiled.nodes {
+		if node.Kind != "TON" {
+			continue
+		}
+		timer := TimerState{PresetMs: node.PresetMs}
+		if oldNode, ok := previousNodes[node.ID]; ok && oldNode.Kind == "TON" {
+			if old, exists := previousTimers[node.ID]; exists {
+				timer.ElapsedMs = old.ElapsedMs
+				timer.Q = old.Q
+			}
+		}
+		timer.Q = timer.ElapsedMs >= node.PresetMs
+		c.timers[node.ID] = timer
+	}
+}
+
+// Program 返回当前已发布的程序。
+func (c *Controller) Program() Program {
+	return c.program.program
 }
 
 func (c *Controller) Start() {
@@ -256,7 +278,7 @@ func (c *Controller) Stop() {
 	c.timers = map[string]TimerState{}
 	for _, node := range c.program.nodes {
 		if node.Kind == "TON" {
-			c.timers[node.ID] = TimerState{}
+			c.timers[node.ID] = TimerState{PresetMs: node.PresetMs}
 		}
 	}
 	c.scans = 0

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -14,20 +15,30 @@ import (
 var frontendAssets embed.FS
 
 type Server struct {
-	mu         sync.Mutex
-	controller *Controller
-	ticker     *time.Ticker
-	done       chan struct{}
-	wg         sync.WaitGroup
+	mu          sync.Mutex
+	controller  *Controller
+	ticker      *time.Ticker
+	done        chan struct{}
+	wg          sync.WaitGroup
+	programPath string
 }
 
 func main() {
-	controller, err := NewController(demoProgram())
+	programPath := os.Getenv("CONTROLLER_PROGRAM_FILE")
+	if programPath == "" {
+		programPath = "data/program.json"
+	}
+	program, err := loadStoredProgram(programPath)
+	if err != nil {
+		log.Fatalf("恢复已保存程序失败：%v", err)
+	}
+	controller, err := NewController(program)
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &Server{controller: controller}
+	server := &Server{controller: controller, programPath: programPath}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/program", server.handleGetProgram)
 	mux.HandleFunc("GET /api/state", server.handleState)
 	mux.HandleFunc("POST /api/start", server.handleStart)
 	mux.HandleFunc("POST /api/pause", server.handlePause)
@@ -81,6 +92,13 @@ func (s *Server) handleState(writer http.ResponseWriter, _ *http.Request) {
 	state := s.controller.State()
 	s.mu.Unlock()
 	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleGetProgram(writer http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	program := s.controller.Program()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, program)
 }
 
 func (s *Server) handleStart(writer http.ResponseWriter, _ *http.Request) {
@@ -164,13 +182,15 @@ func (s *Server) handleProgram(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	compiled, err := compileProgram(program)
-	if err != nil {
+	// 先完整校验并持久化：任何一步失败都不能停掉扫描或替换正在运行的版本。
+	if _, err := compileProgram(program); err != nil {
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	_ = compiled
-	s.stopTicker()
+	if err := saveProgram(s.programPath, program); err != nil {
+		http.Error(writer, "程序保存失败："+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.mu.Lock()
 	if err := s.controller.Load(program); err != nil {
 		s.mu.Unlock()
@@ -178,7 +198,14 @@ func (s *Server) handleProgram(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	state := s.controller.State()
+	running := state.Mode == "running"
 	s.mu.Unlock()
+	// 运行中发布新版本后继续按固定周期扫描；暂停/停止状态保持冻结。
+	if running {
+		s.startTicker()
+	} else {
+		s.stopTicker()
+	}
 	writeJSON(writer, http.StatusOK, state)
 }
 

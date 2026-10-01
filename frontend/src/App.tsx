@@ -19,7 +19,7 @@ import { Play, Pause, Square, StepForward, Upload, RotateCcw } from 'lucide-reac
 import { api } from './api';
 import { demoProgram } from './demo';
 import { nodeTypes } from './ControlNode';
-import type { ControllerState, Program } from './types';
+import type { ControllerState, Program, ProgramDiff } from './types';
 import './style.css';
 
 const initialFlow = toFlow(demoProgram, null);
@@ -48,20 +48,16 @@ function toFlow(program: Program, state: ControllerState | null): { nodes: Node[
   };
 }
 
-function fromFlow(nodes: Node[], edges: Edge[]): Program {
-  const ordered = demoProgram;
+function fromFlow(name: string, nodes: Node[], edges: Edge[]): Program {
   return {
-    name: ordered.name,
-    nodes: nodes.map((node) => {
-      const source = ordered.nodes.find((item) => item.id === node.id);
-      return {
-        id: node.id,
-        kind: source?.kind ?? 'INPUT',
-        label: String(node.data.label),
-        position: { x: node.position.x, y: node.position.y },
-        presetMs: typeof node.data.presetMs === 'number' ? node.data.presetMs : undefined,
-      };
-    }),
+    name,
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      kind: (node.data.kind as Program['nodes'][number]['kind']) ?? 'INPUT',
+      label: String(node.data.label),
+      position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
+      presetMs: typeof node.data.presetMs === 'number' ? node.data.presetMs : undefined,
+    })),
     edges: edges.map((edge) => ({
       id: edge.id,
       source: edge.source,
@@ -77,6 +73,8 @@ export default function App() {
   const [error, setError] = useState('');
   const [nodes, setNodes] = useNodesState<Node>(initialFlow.nodes);
   const [edges, setEdges] = useEdgesState<Edge>(initialFlow.edges);
+  const [dirty, setDirty] = useState(false);
+  const [preview, setPreview] = useState<{ program: Program; diff: ProgramDiff } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -98,6 +96,15 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [state?.mode, refresh]);
 
+  // 画布跟随服务端实际程序：版本变化且本地无未提交编辑时整体同步。
+  useEffect(() => {
+    if (!state || dirty) return;
+    const flow = toFlow(state.program, state);
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.version, dirty]);
+
   useEffect(() => {
     setNodes((current) => current.map((node) => ({
       ...node,
@@ -115,37 +122,66 @@ export default function App() {
     }
   };
 
+  const markDirty = () => setDirty(true);
+
   const onConnect = useCallback((connection: Connection) => {
+    setDirty(true);
     setEdges((current) => addEdge({ ...connection, id: `edge-${Date.now()}` }, current));
   }, [setEdges]);
 
   const onNodesChangeWrapped = useCallback((changes: NodeChange<Node>[]) => {
+    if (changes.some((change) => change.type !== 'select' && change.type !== 'dimensions')) setDirty(true);
     setNodes((current) => applyNodeChanges(changes, current));
   }, [setNodes]);
 
   const onEdgesChangeWrapped = useCallback((changes: EdgeChange<Edge>[]) => {
+    if (changes.some((change) => change.type !== 'select')) setDirty(true);
     setEdges((current) => applyEdgeChanges(changes, current));
   }, [setEdges]);
 
+  // 载入前先预览修订影响；非法连接在生效前被服务端拒绝。
   const loadEditedProgram = async () => {
-    await runAction(() => api.load(fromFlow(nodes, edges)));
+    if (!state) return;
+    const program = fromFlow(state.programName, nodes, edges);
+    try {
+      const diff = await api.preview(program);
+      setPreview({ program, diff });
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const confirmLoad = async (mode: 'restart' | 'preserve') => {
+    if (!preview) return;
+    setPreview(null);
+    await runAction(() => api.load(preview.program, mode));
+    setDirty(false);
   };
 
   const resetDemo = async () => {
-    const flow = toFlow(demoProgram, state);
-    setNodes(flow.nodes);
-    setEdges(flow.edges);
-    await runAction(() => api.load(demoProgram));
+    setDirty(false);
+    setPreview(null);
+    await runAction(() => api.load(demoProgram, 'restart'));
   };
 
-  const inputNodes = useMemo(() => demoProgram.nodes.filter((node) => node.kind === 'INPUT'), []);
+  const program = state?.program ?? demoProgram;
+  const labelOf = useMemo(() => {
+    const map = new Map(program.nodes.map((node) => [node.id, node.label]));
+    return (id: string) => map.get(id) ?? id;
+  }, [program]);
+  const inputNodes = useMemo(() => program.nodes.filter((node) => node.kind === 'INPUT'), [program]);
+  const presetOf = useMemo(() => {
+    const map = new Map(program.nodes.map((node) => [node.id, node.presetMs ?? 0]));
+    return (id: string) => map.get(id) ?? 0;
+  }, [program]);
 
   return (
     <main>
       <header>
         <div>
           <h1>工业控制虚拟控制器</h1>
-          <p>显式扫描顺序 · SR 保持 · TON 通电延时 · 仅仿真 I/O</p>
+          <p>{state?.programName ?? '...'} · 显式扫描顺序 · SR 保持 · TON 通电延时 · 仅仿真 I/O</p>
         </div>
         <div className="status">
           <span className={`mode ${state?.mode ?? 'stopped'}`}>{state?.mode ?? 'loading'}</span>
@@ -161,7 +197,7 @@ export default function App() {
         <button onClick={() => runAction(api.stop)}><Square size={16} />停止复位</button>
         <button onClick={() => runAction(() => api.scan(1))}><StepForward size={16} />单次扫描</button>
         <button onClick={() => runAction(() => api.scan(5))}><StepForward size={16} />扫描 5 次</button>
-        <button onClick={loadEditedProgram}><Upload size={16} />载入编辑版本</button>
+        <button onClick={loadEditedProgram} disabled={!dirty && !state}><Upload size={16} />载入编辑版本{dirty ? ' *' : ''}</button>
         <button onClick={resetDemo}><RotateCcw size={16} />恢复示例</button>
       </section>
 
@@ -176,6 +212,7 @@ export default function App() {
             onNodesChange={onNodesChangeWrapped}
             onEdgesChange={onEdgesChangeWrapped}
             onConnect={onConnect}
+            onNodeDragStart={markDirty}
             fitView
             deleteKeyCode={['Backspace', 'Delete']}
           >
@@ -204,7 +241,7 @@ export default function App() {
           <div className="cards">
             {Object.entries(state?.outputs ?? {}).map(([id, value]) => (
               <div key={id} className={`card ${value ? 'on' : 'off'}`}>
-                <strong>{demoProgram.nodes.find((node) => node.id === id)?.label ?? id}</strong>
+                <strong>{labelOf(id)}</strong>
                 <span>{value ? 'ON' : 'OFF'}</span>
               </div>
             ))}
@@ -214,9 +251,9 @@ export default function App() {
           <div className="timers">
             {Object.entries(state?.timers ?? {}).map(([id, timer]) => (
               <div key={id}>
-                <span>{demoProgram.nodes.find((node) => node.id === id)?.label ?? id}</span>
-                <progress max={500} value={timer.elapsedMs} />
-                <em>{timer.elapsedMs}ms / Q={timer.q ? '1' : '0'}</em>
+                <span>{labelOf(id)}</span>
+                <progress max={presetOf(id) || 500} value={timer.elapsedMs} />
+                <em>{timer.elapsedMs}ms / {presetOf(id)}ms · Q={timer.q ? '1' : '0'}</em>
               </div>
             ))}
           </div>
@@ -229,6 +266,58 @@ export default function App() {
           </ol>
         </aside>
       </section>
+
+      {preview && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h2>载入前预览：版本 {state?.version} → {(state?.version ?? 0) + 1}</h2>
+            {preview.diff.paused && (
+              <p className="modal-note">当前处于暂停状态。请选择保留可兼容状态继续，或明确重新开始（清零定时累计与保持状态）。</p>
+            )}
+            {preview.diff.timerChanges.length > 0 && (
+              <section>
+                <h3>互锁延时变化</h3>
+                <ul>{preview.diff.timerChanges.map((item) => <li key={item}>{item}</li>)}</ul>
+              </section>
+            )}
+            {preview.diff.renamedInputs.length > 0 && (
+              <section>
+                <h3>输入重命名</h3>
+                <ul>{preview.diff.renamedInputs.map((item) => <li key={item}>{item}</li>)}</ul>
+              </section>
+            )}
+            {preview.diff.removedNodes.length > 0 && (
+              <section>
+                <h3>元件删除</h3>
+                <ul>{preview.diff.removedNodes.map((item) => <li key={item}>{item}</li>)}</ul>
+              </section>
+            )}
+            {preview.diff.addedNodes.length > 0 && (
+              <section>
+                <h3>新增元件</h3>
+                <ul>{preview.diff.addedNodes.map((item) => <li key={item}>{item}</li>)}</ul>
+              </section>
+            )}
+            {preview.diff.messages.length > 0 && (
+              <section>
+                <h3>其他说明</h3>
+                <ul>{preview.diff.messages.map((item) => <li key={item}>{item}</li>)}</ul>
+              </section>
+            )}
+            {!preview.diff.compatible && (
+              <p className="modal-warning">包含不兼容变更，无法保留当前状态，只能明确重新开始。</p>
+            )}
+            <div className="modal-actions">
+              {preview.diff.compatible && (
+                <button onClick={() => confirmLoad('preserve')}>保留兼容状态载入</button>
+              )}
+              <button className="danger" onClick={() => confirmLoad('restart')}>明确重新开始</button>
+              <button onClick={() => setPreview(null)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
+

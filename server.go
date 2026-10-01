@@ -35,6 +35,7 @@ func main() {
 	mux.HandleFunc("POST /api/scans", server.handleScan)
 	mux.HandleFunc("PUT /api/inputs/{id}", server.handleInput)
 	mux.HandleFunc("PUT /api/program", server.handleProgram)
+	mux.HandleFunc("POST /api/program/preview", server.handleProgramPreview)
 	staticFiles, err := fs.Sub(frontendAssets, "frontend/dist")
 	if err != nil {
 		log.Fatal(err)
@@ -164,22 +165,45 @@ func (s *Server) handleProgram(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	compiled, err := compileProgram(program)
-	if err != nil {
+	if _, err := compileProgram(program); err != nil {
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	_ = compiled
 	s.stopTicker()
 	s.mu.Lock()
-	if err := s.controller.Load(program); err != nil {
+	var err error
+	if request.URL.Query().Get("mode") == "preserve" {
+		err = s.controller.LoadPreserve(program)
+	} else {
+		err = s.controller.Load(program)
+	}
+	if err != nil {
 		s.mu.Unlock()
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	state := s.controller.State()
 	s.mu.Unlock()
+	if state.Mode == "running" {
+		s.startTicker()
+	}
 	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleProgramPreview(writer http.ResponseWriter, request *http.Request) {
+	var program Program
+	if err := json.NewDecoder(request.Body).Decode(&program); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	diff, err := s.controller.Preview(program)
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(writer, http.StatusOK, diff)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {

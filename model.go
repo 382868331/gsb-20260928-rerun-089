@@ -27,6 +27,7 @@ type ControllerState struct {
 	Mode        string                `json:"mode"`
 	Version     int                   `json:"version"`
 	ProgramName string                `json:"programName"`
+	Program     Program               `json:"program"`
 	ScanNumber  int                   `json:"scanNumber"`
 	ScanMs      int                   `json:"scanMs"`
 	Inputs      map[string]bool       `json:"inputs"`
@@ -34,6 +35,18 @@ type ControllerState struct {
 	Outputs     map[string]bool       `json:"outputs"`
 	Timers      map[string]TimerState `json:"timers"`
 	Log         []ScanEvent           `json:"log"`
+}
+
+// ProgramDiff 描述待载入程序相对当前程序的修订影响，
+// 用于在暂停状态下预览后再决定保留兼容状态或明确重新开始。
+type ProgramDiff struct {
+	Compatible    bool     `json:"compatible"`
+	Paused        bool     `json:"paused"`
+	TimerChanges  []string `json:"timerChanges"`
+	RenamedInputs []string `json:"renamedInputs"`
+	RemovedNodes  []string `json:"removedNodes"`
+	AddedNodes    []string `json:"addedNodes"`
+	Messages      []string `json:"messages"`
 }
 
 type TimerState struct {

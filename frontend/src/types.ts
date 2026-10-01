@@ -26,6 +26,7 @@ export interface ControllerState {
   mode: 'stopped' | 'paused' | 'running';
   version: number;
   programName: string;
+  program: Program;
   scanNumber: number;
   scanMs: number;
   inputs: Record<string, boolean>;
@@ -33,4 +34,18 @@ export interface ControllerState {
   outputs: Record<string, boolean>;
   timers: Record<string, { elapsedMs: number; q: boolean }>;
   log: Array<{ scan: number; message: string }>;
+}
+
+export interface ImpactItem {
+  id: string;
+  label: string;
+  detail: string;
+}
+
+export interface RevisionImpact {
+  compatible: boolean;
+  timerChanges: ImpactItem[];
+  renamedInputs: ImpactItem[];
+  removedNodes: ImpactItem[];
+  addedNodes: ImpactItem[];
 }

@@ -164,15 +164,24 @@ func (s *Server) handleProgram(writer http.ResponseWriter, request *http.Request
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	compiled, err := compileProgram(program)
-	if err != nil {
-		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+	mode := request.URL.Query().Get("mode")
+	if mode == "preview" {
+		s.mu.Lock()
+		impact, err := s.controller.Preview(program)
+		s.mu.Unlock()
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		writeJSON(writer, http.StatusOK, impact)
 		return
 	}
-	_ = compiled
-	s.stopTicker()
+	keep := mode == "merge"
+	if !keep {
+		s.stopTicker()
+	}
 	s.mu.Lock()
-	if err := s.controller.Load(program); err != nil {
+	if err := s.controller.Load(program, keep); err != nil {
 		s.mu.Unlock()
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return

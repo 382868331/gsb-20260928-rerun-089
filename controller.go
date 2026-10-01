@@ -207,29 +207,94 @@ func NewController(program Program) (*Controller, error) {
 	return controller, nil
 }
 
-func (c *Controller) Load(program Program) error {
+func (c *Controller) Load(program Program, keepCompatible bool) error {
 	compiled, err := compileProgram(program)
 	if err != nil {
 		return err
 	}
+	previous := c.program
 	c.program = compiled
 	c.version++
-	c.mode = "stopped"
-	c.inputs = map[string]bool{}
-	c.values = map[string]bool{}
-	c.timers = map[string]TimerState{}
-	c.scans = 0
-	c.log = nil
-	for id := range compiled.inputs {
-		c.inputs[id] = false
+	if !keepCompatible {
+		c.mode = "stopped"
+		c.inputs = map[string]bool{}
+		c.values = map[string]bool{}
+		c.timers = map[string]TimerState{}
+		c.scans = 0
+		c.log = nil
+		for id := range compiled.inputs {
+			c.inputs[id] = false
+		}
+		for _, node := range compiled.nodes {
+			if node.Kind == "TON" {
+				c.timers[node.ID] = TimerState{}
+			}
+		}
+		c.addLog("编辑后的程序已作为新版本载入，运行状态已明确重置")
+		return nil
 	}
-	for _, node := range compiled.nodes {
-		if node.Kind == "TON" {
-			c.timers[node.ID] = TimerState{}
+	inputs := map[string]bool{}
+	for id := range compiled.inputs {
+		inputs[id] = c.inputs[id]
+	}
+	values := map[string]bool{}
+	for id, node := range compiled.nodes {
+		if old, ok := previous.nodes[id]; ok && old.Kind == node.Kind {
+			values[id] = c.values[id]
 		}
 	}
-	c.addLog("编辑后的程序已作为新版本载入")
+	timers := map[string]TimerState{}
+	for id, node := range compiled.nodes {
+		if node.Kind != "TON" {
+			continue
+		}
+		if old, ok := previous.nodes[id]; ok && old.Kind == "TON" && old.PresetMs == node.PresetMs {
+			timers[id] = c.timers[id]
+		}
+	}
+	c.inputs = inputs
+	c.values = values
+	c.timers = timers
+	c.addLog("新版本已载入并保留可兼容状态；被删除或修改的元件状态已清除")
 	return nil
+}
+
+func (c *Controller) Preview(program Program) (*RevisionImpact, error) {
+	compiled, err := compileProgram(program)
+	if err != nil {
+		return nil, err
+	}
+	impact := &RevisionImpact{
+		Compatible:    true,
+		TimerChanges:  []ImpactItem{},
+		RenamedInputs: []ImpactItem{},
+		RemovedNodes:  []ImpactItem{},
+		AddedNodes:    []ImpactItem{},
+	}
+	for id, node := range compiled.nodes {
+		old, ok := c.program.nodes[id]
+		if !ok {
+			impact.AddedNodes = append(impact.AddedNodes, ImpactItem{ID: id, Label: node.Label, Detail: fmt.Sprintf("新增 %s 元件，状态从零开始", node.Kind)})
+			continue
+		}
+		if old.Kind != node.Kind {
+			impact.Compatible = false
+			impact.RemovedNodes = append(impact.RemovedNodes, ImpactItem{ID: id, Label: old.Label, Detail: fmt.Sprintf("类型由 %s 变为 %s，原状态无法保留", old.Kind, node.Kind)})
+			continue
+		}
+		if node.Kind == "TON" && node.PresetMs != old.PresetMs {
+			impact.TimerChanges = append(impact.TimerChanges, ImpactItem{ID: id, Label: node.Label, Detail: fmt.Sprintf("互锁延时 %dms -> %dms，保留状态时该定时器累计清零", old.PresetMs, node.PresetMs)})
+		}
+		if node.Kind == "INPUT" && node.Label != old.Label {
+			impact.RenamedInputs = append(impact.RenamedInputs, ImpactItem{ID: id, Label: node.Label, Detail: fmt.Sprintf("输入 %s 重命名为 %s，采样值保持不变", old.Label, node.Label)})
+		}
+	}
+	for id, node := range c.program.nodes {
+		if _, ok := compiled.nodes[id]; !ok {
+			impact.RemovedNodes = append(impact.RemovedNodes, ImpactItem{ID: id, Label: node.Label, Detail: fmt.Sprintf("%s 元件被删除，其状态与连接一并移除", node.Kind)})
+		}
+	}
+	return impact, nil
 }
 
 func (c *Controller) Start() {
@@ -370,6 +435,7 @@ func (c *Controller) State() ControllerState {
 		Mode:        c.mode,
 		Version:     c.version,
 		ProgramName: c.program.program.Name,
+		Program:     c.program.program,
 		ScanNumber:  c.scans,
 		ScanMs:      scanIntervalMs,
 		Inputs:      cloneBools(c.inputs),

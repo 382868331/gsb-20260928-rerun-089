@@ -27,6 +27,7 @@ type ControllerState struct {
 	Mode        string                `json:"mode"`
 	Version     int                   `json:"version"`
 	ProgramName string                `json:"programName"`
+	Program     Program               `json:"program"`
 	ScanNumber  int                   `json:"scanNumber"`
 	ScanMs      int                   `json:"scanMs"`
 	Inputs      map[string]bool       `json:"inputs"`
@@ -34,6 +35,20 @@ type ControllerState struct {
 	Outputs     map[string]bool       `json:"outputs"`
 	Timers      map[string]TimerState `json:"timers"`
 	Log         []ScanEvent           `json:"log"`
+}
+
+type ImpactItem struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Detail string `json:"detail"`
+}
+
+type RevisionImpact struct {
+	Compatible    bool         `json:"compatible"`
+	TimerChanges  []ImpactItem `json:"timerChanges"`
+	RenamedInputs []ImpactItem `json:"renamedInputs"`
+	RemovedNodes  []ImpactItem `json:"removedNodes"`
+	AddedNodes    []ImpactItem `json:"addedNodes"`
 }
 
 type TimerState struct {

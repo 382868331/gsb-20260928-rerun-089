@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   Controls,
@@ -19,7 +19,7 @@ import { Play, Pause, Square, StepForward, Upload, RotateCcw } from 'lucide-reac
 import { api } from './api';
 import { demoProgram } from './demo';
 import { nodeTypes } from './ControlNode';
-import type { ControllerState, Program } from './types';
+import type { ControllerState, Program, RevisionImpact } from './types';
 import './style.css';
 
 const initialFlow = toFlow(demoProgram, null);
@@ -48,20 +48,16 @@ function toFlow(program: Program, state: ControllerState | null): { nodes: Node[
   };
 }
 
-function fromFlow(nodes: Node[], edges: Edge[]): Program {
-  const ordered = demoProgram;
+function fromFlow(name: string, nodes: Node[], edges: Edge[]): Program {
   return {
-    name: ordered.name,
-    nodes: nodes.map((node) => {
-      const source = ordered.nodes.find((item) => item.id === node.id);
-      return {
-        id: node.id,
-        kind: source?.kind ?? 'INPUT',
-        label: String(node.data.label),
-        position: { x: node.position.x, y: node.position.y },
-        presetMs: typeof node.data.presetMs === 'number' ? node.data.presetMs : undefined,
-      };
-    }),
+    name,
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      kind: (node.data.kind as Program['nodes'][number]['kind']) ?? 'INPUT',
+      label: String(node.data.label),
+      position: { x: node.position.x, y: node.position.y },
+      presetMs: typeof node.data.presetMs === 'number' ? node.data.presetMs : undefined,
+    })),
     edges: edges.map((edge) => ({
       id: edge.id,
       source: edge.source,
@@ -77,6 +73,9 @@ export default function App() {
   const [error, setError] = useState('');
   const [nodes, setNodes] = useNodesState<Node>(initialFlow.nodes);
   const [edges, setEdges] = useEdgesState<Edge>(initialFlow.edges);
+  const [impact, setImpact] = useState<RevisionImpact | null>(null);
+  const [pendingProgram, setPendingProgram] = useState<Program | null>(null);
+  const versionRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -97,6 +96,14 @@ export default function App() {
     const timer = window.setInterval(refresh, 100);
     return () => window.clearInterval(timer);
   }, [state?.mode, refresh]);
+
+  useEffect(() => {
+    if (!state || versionRef.current === state.version) return;
+    versionRef.current = state.version;
+    const flow = toFlow(state.program, state);
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+  }, [state, setNodes, setEdges]);
 
   useEffect(() => {
     setNodes((current) => current.map((node) => ({
@@ -128,17 +135,32 @@ export default function App() {
   }, [setEdges]);
 
   const loadEditedProgram = async () => {
-    await runAction(() => api.load(fromFlow(nodes, edges)));
+    try {
+      const program = fromFlow(state?.programName ?? '编辑版本', nodes, edges);
+      const preview = await api.preview(program);
+      setPendingProgram(program);
+      setImpact(preview);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const applyLoad = async (mode: 'merge' | 'restart') => {
+    if (!pendingProgram) return;
+    await runAction(() => api.load(pendingProgram, mode));
+    setImpact(null);
+    setPendingProgram(null);
   };
 
   const resetDemo = async () => {
-    const flow = toFlow(demoProgram, state);
-    setNodes(flow.nodes);
-    setEdges(flow.edges);
-    await runAction(() => api.load(demoProgram));
+    await runAction(() => api.load(demoProgram, 'restart'));
   };
 
-  const inputNodes = useMemo(() => demoProgram.nodes.filter((node) => node.kind === 'INPUT'), []);
+  const program = state?.program ?? null;
+  const inputNodes = useMemo(() => (program?.nodes ?? []).filter((node) => node.kind === 'INPUT'), [program]);
+  const labelOf = useCallback((id: string) => program?.nodes.find((node) => node.id === id)?.label ?? id, [program]);
+  const presetOf = useCallback((id: string) => program?.nodes.find((node) => node.id === id)?.presetMs ?? 500, [program]);
 
   return (
     <main>
@@ -150,6 +172,7 @@ export default function App() {
         <div className="status">
           <span className={`mode ${state?.mode ?? 'stopped'}`}>{state?.mode ?? 'loading'}</span>
           <span>版本 {state?.version ?? '-'}</span>
+          <span>{state?.programName ?? ''}</span>
           <span>扫描 {state?.scanNumber ?? 0}</span>
           <span>{state?.scanMs ?? 100}ms / 次</span>
         </div>
@@ -166,6 +189,27 @@ export default function App() {
       </section>
 
       {error && <div className="error">{error}</div>}
+
+      {impact && (
+        <section className="impact">
+          <h2>版本影响预览（尚未生效）</h2>
+          {!impact.compatible && <p className="warn">存在类型变更，部分状态无法保留。</p>}
+          <ul>
+            {impact.timerChanges.map((item) => <li key={`t-${item.id}`}><b>互锁延时</b> {item.label}：{item.detail}</li>)}
+            {impact.renamedInputs.map((item) => <li key={`r-${item.id}`}><b>输入重命名</b>：{item.detail}</li>)}
+            {impact.removedNodes.map((item) => <li key={`d-${item.id}`}><b>元件删除</b> {item.label}：{item.detail}</li>)}
+            {impact.addedNodes.map((item) => <li key={`a-${item.id}`}><b>新增元件</b> {item.label}：{item.detail}</li>)}
+            {!impact.timerChanges.length && !impact.renamedInputs.length && !impact.removedNodes.length && !impact.addedNodes.length && (
+              <li>与当前版本完全兼容，无状态影响。</li>
+            )}
+          </ul>
+          <div className="impact-actions">
+            <button onClick={() => applyLoad('merge')}>保留可兼容状态载入</button>
+            <button onClick={() => applyLoad('restart')}>明确重新开始</button>
+            <button onClick={() => { setImpact(null); setPendingProgram(null); }}>取消</button>
+          </div>
+        </section>
+      )}
 
       <section className="workspace">
         <div className="canvas">
@@ -204,7 +248,7 @@ export default function App() {
           <div className="cards">
             {Object.entries(state?.outputs ?? {}).map(([id, value]) => (
               <div key={id} className={`card ${value ? 'on' : 'off'}`}>
-                <strong>{demoProgram.nodes.find((node) => node.id === id)?.label ?? id}</strong>
+                <strong>{labelOf(id)}</strong>
                 <span>{value ? 'ON' : 'OFF'}</span>
               </div>
             ))}
@@ -214,8 +258,8 @@ export default function App() {
           <div className="timers">
             {Object.entries(state?.timers ?? {}).map(([id, timer]) => (
               <div key={id}>
-                <span>{demoProgram.nodes.find((node) => node.id === id)?.label ?? id}</span>
-                <progress max={500} value={timer.elapsedMs} />
+                <span>{labelOf(id)}</span>
+                <progress max={presetOf(id)} value={timer.elapsedMs} />
                 <em>{timer.elapsedMs}ms / Q={timer.q ? '1' : '0'}</em>
               </div>
             ))}

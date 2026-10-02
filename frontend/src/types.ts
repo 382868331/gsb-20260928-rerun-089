@@ -34,6 +34,8 @@ export interface ControllerState {
   outputs: Record<string, boolean>;
   timers: Record<string, { elapsedMs: number; q: boolean }>;
   log: Array<{ scan: number; message: string }>;
+  boundaries?: Boundary[];
+  branches?: Branch[];
 }
 
 export interface ProgramDiff {
@@ -44,4 +46,43 @@ export interface ProgramDiff {
   removedNodes: string[];
   addedNodes: string[];
   messages: string[];
+}
+
+export interface ScanRecord {
+  scan: number;
+  version: number;
+  inputs: Record<string, boolean>;
+  outputs: Record<string, boolean>;
+  internals: Record<string, boolean>;
+  timers: Record<string, { elapsedMs: number; q: boolean }>;
+}
+
+export interface Boundary {
+  id: string;
+  label: string;
+  scan: number;
+  version: number;
+  program: Program;
+}
+
+export interface Divergence {
+  scan: number;
+  outputs: string[];
+  internals: string[];
+  message: string;
+}
+
+export interface Branch {
+  id: string;
+  name: string;
+  boundaryId: string;
+  baseScan: number;
+  baseVersion: number;
+  programName: string;
+  program: Program;
+  baseInputs: Record<string, boolean>;
+  segment: Array<Record<string, boolean>>;
+  records: ScanRecord[];
+  restarts: Array<{ scan: number; message: string }>;
+  divergence?: Divergence | null;
 }

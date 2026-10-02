@@ -16,6 +16,8 @@ var frontendAssets embed.FS
 type Server struct {
 	mu         sync.Mutex
 	controller *Controller
+	branches   *BranchManager
+	storePath  string
 	ticker     *time.Ticker
 	done       chan struct{}
 	wg         sync.WaitGroup
@@ -26,7 +28,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &Server{controller: controller}
+	manager := NewBranchManager(controller)
+	server := &Server{controller: controller, branches: manager, storePath: "branch_store.json"}
+	if err := manager.Load(server.storePath); err != nil {
+		log.Printf("分支存储载入失败，按空存储继续：%v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", server.handleState)
 	mux.HandleFunc("POST /api/start", server.handleStart)
@@ -36,6 +42,10 @@ func main() {
 	mux.HandleFunc("PUT /api/inputs/{id}", server.handleInput)
 	mux.HandleFunc("PUT /api/program", server.handleProgram)
 	mux.HandleFunc("POST /api/program/preview", server.handleProgramPreview)
+	mux.HandleFunc("POST /api/boundaries", server.handleBoundary)
+	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
+	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
+	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
 	staticFiles, err := fs.Sub(frontendAssets, "frontend/dist")
 	if err != nil {
 		log.Fatal(err)
@@ -80,8 +90,30 @@ func (s *Server) stopTicker() {
 func (s *Server) handleState(writer http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	state := s.controller.State()
+	s.attachBranches(&state)
 	s.mu.Unlock()
 	writeJSON(writer, http.StatusOK, state)
+}
+
+// attachBranches 把扫描边界与试验分支摘要附加到状态响应。
+// 调用方必须已持有锁。
+func (s *Server) attachBranches(state *ControllerState) {
+	if s.branches == nil {
+		return
+	}
+	state.Boundaries = s.branches.Boundaries()
+	state.Branches = s.branches.Branches()
+}
+
+// persist 把边界与分支保存到磁盘；保存重开后各分支的输入段、
+// 程序版本与扫描序号保持一致。
+func (s *Server) persist() {
+	if s.branches == nil || s.storePath == "" {
+		return
+	}
+	if err := s.branches.Save(s.storePath); err != nil {
+		log.Printf("分支存储保存失败：%v", err)
+	}
 }
 
 func (s *Server) handleStart(writer http.ResponseWriter, _ *http.Request) {
@@ -204,6 +236,98 @@ func (s *Server) handleProgramPreview(writer http.ResponseWriter, request *http.
 		return
 	}
 	writeJSON(writer, http.StatusOK, diff)
+}
+
+type boundaryRequest struct {
+	Label string `json:"label"`
+}
+
+func (s *Server) handleBoundary(writer http.ResponseWriter, request *http.Request) {
+	req := boundaryRequest{}
+	if request.ContentLength > 0 {
+		if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	s.mu.Lock()
+	s.branches.SaveBoundary(req.Label)
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+type branchCreateRequest struct {
+	BoundaryID string `json:"boundaryId"`
+	Name       string `json:"name"`
+}
+
+func (s *Server) handleBranchCreate(writer http.ResponseWriter, request *http.Request) {
+	var req branchCreateRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if _, err := s.branches.CreateBranch(req.BoundaryID, req.Name); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusNotFound)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+type branchSegmentRequest struct {
+	FromScan int               `json:"fromScan"`
+	Inputs   []map[string]bool `json:"inputs"`
+}
+
+func (s *Server) handleBranchSegment(writer http.ResponseWriter, request *http.Request) {
+	var req branchSegmentRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if _, err := s.branches.ReplaceSegment(request.PathValue("id"), req.FromScan, req.Inputs); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+type branchRestartRequest struct {
+	NodeID string `json:"nodeId"`
+}
+
+func (s *Server) handleBranchRestart(writer http.ResponseWriter, request *http.Request) {
+	var req branchRestartRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if _, err := s.branches.RestartElement(request.PathValue("id"), req.NodeID); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {

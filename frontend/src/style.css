@@ -102,6 +102,54 @@ em { font-style: normal; font-size: 12px; color: #64748b; }
 }
 .log li { margin-bottom: 5px; }
 .log b { margin-right: 6px; color: #0f172a; }
+
+.branches { margin-top: 16px; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+.boundary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf1f5;
+  font-size: 12px;
+}
+.branch-card {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.branch-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.branch-meta { margin: 4px 0; font-size: 12px; color: #64748b; }
+.divergence {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+}
+.segment-editor { margin-top: 8px; display: grid; gap: 8px; }
+.segment-editor label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.segment-editor input[type='number'] { width: 80px; }
+.segment-editor table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.segment-editor th, .segment-editor td {
+  border: 1px solid #e2e8f0;
+  padding: 4px 6px;
+  text-align: center;
+  background: white;
+}
+.restart-row { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+.restart-row select { flex: 1; padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.restart-log { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: #92400e; }
 .control-node {
   position: relative;
   width: 170px;

@@ -8,6 +8,9 @@ import (
 
 const scanIntervalMs = 100
 
+// maxHistoryRecords 限制只读扫描历史的保留长度，避免长期运行无限增长。
+const maxHistoryRecords = 1000
+
 var nodeKinds = map[string]bool{
 	"INPUT":  true,
 	"OUTPUT": true,
@@ -180,6 +183,7 @@ type Controller struct {
 	timers  map[string]TimerState
 	scans   int
 	log     []ScanEvent
+	history []ScanRecord
 }
 
 func NewController(program Program) (*Controller, error) {
@@ -363,27 +367,44 @@ func (c *Controller) Scan() ControllerState {
 	}
 	c.scans++
 	previousOutputs := c.outputSnapshot()
-	nextValues := map[string]bool{}
-	nextTimers := map[string]TimerState{}
-	for id, timer := range c.timers {
-		nextTimers[id] = timer
-	}
-
-	for _, id := range c.program.order {
+	c.values, c.timers = scanOnce(c.program, c.inputs, c.values, c.timers)
+	for id, before := range previousOutputs {
 		node := c.program.nodes[id]
+		if after := c.values[id]; before != after {
+			c.addLog(fmt.Sprintf("输出 %s(%s): %t -> %t", id, node.Label, before, after))
+		}
+	}
+	c.history = append(c.history, c.record())
+	if len(c.history) > maxHistoryRecords {
+		c.history = c.history[len(c.history)-maxHistoryRecords:]
+	}
+	return c.State()
+}
+
+// scanOnce 执行一个扫描周期：按拓扑顺序读取输入采样、求值功能块、
+// 推进定时器并更新输出。控制器正式扫描与试验分支模拟共用此逻辑。
+func scanOnce(compiled *CompiledProgram, inputs, values map[string]bool, timers map[string]TimerState) (map[string]bool, map[string]TimerState) {
+	nextValues := map[string]bool{}
+	nextTimers := cloneTimers(timers)
+	for _, id := range compiled.order {
+		node := compiled.nodes[id]
+		sourceValue := func(port string) bool {
+			ref := compiled.sources[id][port]
+			return nextValues[ref.Node]
+		}
 		switch node.Kind {
 		case "INPUT":
-			nextValues[id] = c.inputs[id]
+			nextValues[id] = inputs[id]
 		case "AND":
-			nextValues[id] = c.sourceValue(nextValues, id, "a") && c.sourceValue(nextValues, id, "b")
+			nextValues[id] = sourceValue("a") && sourceValue("b")
 		case "OR":
-			nextValues[id] = c.sourceValue(nextValues, id, "a") || c.sourceValue(nextValues, id, "b")
+			nextValues[id] = sourceValue("a") || sourceValue("b")
 		case "NOT":
-			nextValues[id] = !c.sourceValue(nextValues, id, "in")
+			nextValues[id] = !sourceValue("in")
 		case "SR":
-			set := c.sourceValue(nextValues, id, "set")
-			reset := c.sourceValue(nextValues, id, "reset")
-			latched := c.values[id]
+			set := sourceValue("set")
+			reset := sourceValue("reset")
+			latched := values[id]
 			if reset {
 				latched = false
 			} else if set {
@@ -391,9 +412,8 @@ func (c *Controller) Scan() ControllerState {
 			}
 			nextValues[id] = latched
 		case "TON":
-			enabled := c.sourceValue(nextValues, id, "in")
 			timer := nextTimers[id]
-			if enabled {
+			if sourceValue("in") {
 				timer.ElapsedMs += scanIntervalMs
 				if timer.ElapsedMs >= node.PresetMs {
 					timer.Q = true
@@ -404,18 +424,37 @@ func (c *Controller) Scan() ControllerState {
 			nextTimers[id] = timer
 			nextValues[id] = timer.Q
 		case "OUTPUT":
-			nextValues[id] = c.sourceValue(nextValues, id, "in")
+			nextValues[id] = sourceValue("in")
 		}
 	}
-	c.values = nextValues
-	c.timers = nextTimers
-	for id, before := range previousOutputs {
-		node := c.program.nodes[id]
-		if after := c.values[id]; before != after {
-			c.addLog(fmt.Sprintf("输出 %s(%s): %t -> %t", id, node.Label, before, after))
+	return nextValues, nextTimers
+}
+
+// record 把刚执行的扫描固化为只读历史记录，供试验分支比较共同前缀。
+func (c *Controller) record() ScanRecord {
+	outputs, internals := splitValues(c.program, c.values)
+	return ScanRecord{
+		Scan:      c.scans,
+		Version:   c.version,
+		Inputs:    cloneBools(c.inputs),
+		Outputs:   outputs,
+		Internals: internals,
+		Timers:    cloneTimers(c.timers),
+	}
+}
+
+func splitValues(compiled *CompiledProgram, values map[string]bool) (map[string]bool, map[string]bool) {
+	outputs := map[string]bool{}
+	internals := map[string]bool{}
+	for _, id := range compiled.order {
+		node := compiled.nodes[id]
+		if node.Kind == "OUTPUT" {
+			outputs[id] = values[id]
+		} else if node.Kind != "INPUT" {
+			internals[id] = values[id]
 		}
 	}
-	return c.State()
+	return outputs, internals
 }
 
 func (c *Controller) sourceValue(values map[string]bool, nodeID, port string) bool {

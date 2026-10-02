@@ -19,6 +19,7 @@ import { Play, Pause, Square, StepForward, Upload, RotateCcw } from 'lucide-reac
 import { api } from './api';
 import { demoProgram } from './demo';
 import { nodeTypes } from './ControlNode';
+import { BranchPanel } from './BranchPanel';
 import type { ControllerState, Program, ProgramDiff } from './types';
 import './style.css';
 
@@ -29,7 +30,7 @@ function toFlow(program: Program, state: ControllerState | null): { nodes: Node[
     nodes: program.nodes.map((item) => ({
       id: item.id,
       type: 'control',
-      position: item.position,
+      position: item.position ?? { x: 0, y: 0 },
       data: {
         kind: item.kind,
         label: item.label,
@@ -98,7 +99,7 @@ export default function App() {
 
   // 画布跟随服务端实际程序：版本变化且本地无未提交编辑时整体同步。
   useEffect(() => {
-    if (!state || dirty) return;
+    if (!state?.program || dirty) return;
     const flow = toFlow(state.program, state);
     setNodes(flow.nodes);
     setEdges(flow.edges);
@@ -113,12 +114,16 @@ export default function App() {
     setEdges((current) => current.map((edge) => ({ ...edge, animated: Boolean(state?.outputs[edge.target]) })));
   }, [state, setNodes, setEdges]);
 
-  const runAction = async (action: () => Promise<ControllerState>) => {
+  // runAction 返回是否成功：只有成功才允许调用方清理编辑/预览状态，
+  // 失败时保留原暂停程序与本地编辑，不能让画布误以为新版本已生效。
+  const runAction = async (action: () => Promise<ControllerState>): Promise<boolean> => {
     try {
       setState(await action());
       setError('');
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     }
   };
 
@@ -154,8 +159,9 @@ export default function App() {
 
   const confirmLoad = async (mode: 'restart' | 'preserve') => {
     if (!preview) return;
+    const ok = await runAction(() => api.load(preview.program, mode));
+    if (!ok) return;
     setPreview(null);
-    await runAction(() => api.load(preview.program, mode));
     setDirty(false);
   };
 
@@ -264,6 +270,8 @@ export default function App() {
               <li key={`${event.scan}-${index}`}><b>#{event.scan}</b>{event.message}</li>
             ))}
           </ol>
+
+          {state && <BranchPanel state={state} runAction={runAction} />}
         </aside>
       </section>
 
@@ -320,4 +328,3 @@ export default function App() {
     </main>
   );
 }
-

@@ -21,4 +21,11 @@ export const api = {
   load: (program: Program, mode: 'restart' | 'preserve' = 'restart') =>
     request<ControllerState>(`/api/program?mode=${mode}`, { method: 'PUT', body: JSON.stringify(program) }),
   preview: (program: Program) => request<ProgramDiff>('/api/program/preview', { method: 'POST', body: JSON.stringify(program) }),
+  saveBoundary: (label: string) => request<ControllerState>('/api/boundaries', { method: 'POST', body: JSON.stringify({ label }) }),
+  createBranch: (boundaryId: string, name: string) =>
+    request<ControllerState>('/api/branches', { method: 'POST', body: JSON.stringify({ boundaryId, name }) }),
+  replaceSegment: (id: string, fromScan: number, inputs: Array<Record<string, boolean>>) =>
+    request<ControllerState>(`/api/branches/${id}/segment`, { method: 'PUT', body: JSON.stringify({ fromScan, inputs }) }),
+  restartElement: (id: string, nodeId: string) =>
+    request<ControllerState>(`/api/branches/${id}/restart`, { method: 'POST', body: JSON.stringify({ nodeId }) }),
 };

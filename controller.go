@@ -180,6 +180,12 @@ type Controller struct {
 	timers  map[string]TimerState
 	scans   int
 	log     []ScanEvent
+	history []ScanRecord
+
+	boundaries     []*Boundary
+	branches       []*Branch
+	nextBoundaryID int
+	nextBranchID   int
 }
 
 func NewController(program Program) (*Controller, error) {
@@ -220,6 +226,7 @@ func (c *Controller) Load(program Program) error {
 	c.timers = map[string]TimerState{}
 	c.scans = 0
 	c.log = nil
+	c.history = nil
 	for id := range compiled.inputs {
 		c.inputs[id] = false
 	}
@@ -363,27 +370,45 @@ func (c *Controller) Scan() ControllerState {
 	}
 	c.scans++
 	previousOutputs := c.outputSnapshot()
-	nextValues := map[string]bool{}
-	nextTimers := map[string]TimerState{}
-	for id, timer := range c.timers {
-		nextTimers[id] = timer
-	}
-
-	for _, id := range c.program.order {
+	c.values, c.timers = evalScan(c.program, c.inputs, c.values, c.timers)
+	for id, before := range previousOutputs {
 		node := c.program.nodes[id]
+		if after := c.values[id]; before != after {
+			c.addLog(fmt.Sprintf("输出 %s(%s): %t -> %t", id, node.Label, before, after))
+		}
+	}
+	c.history = append(c.history, ScanRecord{
+		Scan:      c.scans,
+		Outputs:   c.outputSnapshot(),
+		Internals: c.internalSnapshot(),
+	})
+	return c.State()
+}
+
+// evalScan 按拓扑顺序求值一次扫描：读取输入采样、更新内部功能块与
+// 定时器、刷新输出。主执行与试验分支共用同一套扫描语义。
+func evalScan(program *CompiledProgram, inputs map[string]bool, prevValues map[string]bool, prevTimers map[string]TimerState) (map[string]bool, map[string]TimerState) {
+	nextValues := map[string]bool{}
+	nextTimers := cloneTimers(prevTimers)
+	source := func(nodeID, port string) bool {
+		ref := program.sources[nodeID][port]
+		return nextValues[ref.Node]
+	}
+	for _, id := range program.order {
+		node := program.nodes[id]
 		switch node.Kind {
 		case "INPUT":
-			nextValues[id] = c.inputs[id]
+			nextValues[id] = inputs[id]
 		case "AND":
-			nextValues[id] = c.sourceValue(nextValues, id, "a") && c.sourceValue(nextValues, id, "b")
+			nextValues[id] = source(id, "a") && source(id, "b")
 		case "OR":
-			nextValues[id] = c.sourceValue(nextValues, id, "a") || c.sourceValue(nextValues, id, "b")
+			nextValues[id] = source(id, "a") || source(id, "b")
 		case "NOT":
-			nextValues[id] = !c.sourceValue(nextValues, id, "in")
+			nextValues[id] = !source(id, "in")
 		case "SR":
-			set := c.sourceValue(nextValues, id, "set")
-			reset := c.sourceValue(nextValues, id, "reset")
-			latched := c.values[id]
+			set := source(id, "set")
+			reset := source(id, "reset")
+			latched := prevValues[id]
 			if reset {
 				latched = false
 			} else if set {
@@ -391,7 +416,7 @@ func (c *Controller) Scan() ControllerState {
 			}
 			nextValues[id] = latched
 		case "TON":
-			enabled := c.sourceValue(nextValues, id, "in")
+			enabled := source(id, "in")
 			timer := nextTimers[id]
 			if enabled {
 				timer.ElapsedMs += scanIntervalMs
@@ -404,23 +429,10 @@ func (c *Controller) Scan() ControllerState {
 			nextTimers[id] = timer
 			nextValues[id] = timer.Q
 		case "OUTPUT":
-			nextValues[id] = c.sourceValue(nextValues, id, "in")
+			nextValues[id] = source(id, "in")
 		}
 	}
-	c.values = nextValues
-	c.timers = nextTimers
-	for id, before := range previousOutputs {
-		node := c.program.nodes[id]
-		if after := c.values[id]; before != after {
-			c.addLog(fmt.Sprintf("输出 %s(%s): %t -> %t", id, node.Label, before, after))
-		}
-	}
-	return c.State()
-}
-
-func (c *Controller) sourceValue(values map[string]bool, nodeID, port string) bool {
-	ref := c.program.sources[nodeID][port]
-	return values[ref.Node]
+	return nextValues, nextTimers
 }
 
 func (c *Controller) outputSnapshot() map[string]bool {
@@ -431,6 +443,16 @@ func (c *Controller) outputSnapshot() map[string]bool {
 		}
 	}
 	return outputs
+}
+
+func (c *Controller) internalSnapshot() map[string]bool {
+	internals := map[string]bool{}
+	for _, node := range c.program.nodes {
+		if node.Kind != "INPUT" && node.Kind != "OUTPUT" {
+			internals[node.ID] = c.values[node.ID]
+		}
+	}
+	return internals
 }
 
 func (c *Controller) State() ControllerState {
@@ -461,7 +483,30 @@ func (c *Controller) State() ControllerState {
 		Outputs:     outputs,
 		Timers:      cloneTimers(c.timers),
 		Log:         log,
+		Boundaries:  c.boundarySummaries(),
+		Branches:    c.branchViews(),
 	}
+}
+
+func (c *Controller) boundarySummaries() []BoundarySummary {
+	summaries := []BoundarySummary{}
+	for _, boundary := range c.boundaries {
+		summaries = append(summaries, BoundarySummary{
+			ID:      boundary.ID,
+			Name:    boundary.Name,
+			Scan:    boundary.Scan,
+			Version: boundary.Version,
+		})
+	}
+	return summaries
+}
+
+func (c *Controller) branchViews() []BranchView {
+	views := []BranchView{}
+	for _, branch := range c.branches {
+		views = append(views, branch.view())
+	}
+	return views
 }
 
 func (c *Controller) addLog(message string) {

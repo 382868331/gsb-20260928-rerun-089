@@ -19,6 +19,7 @@ import { Play, Pause, Square, StepForward, Upload, RotateCcw } from 'lucide-reac
 import { api } from './api';
 import { demoProgram } from './demo';
 import { nodeTypes } from './ControlNode';
+import { BranchPanel } from './BranchPanel';
 import type { ControllerState, Program, ProgramDiff } from './types';
 import './style.css';
 
@@ -29,7 +30,8 @@ function toFlow(program: Program, state: ControllerState | null): { nodes: Node[
     nodes: program.nodes.map((item) => ({
       id: item.id,
       type: 'control',
-      position: item.position,
+      // 服务端对空 position 会省略字段，缺省坐标避免画布因空值整体空白。
+      position: item.position ?? { x: 0, y: 0 },
       data: {
         kind: item.kind,
         label: item.label,
@@ -75,6 +77,7 @@ export default function App() {
   const [edges, setEdges] = useEdgesState<Edge>(initialFlow.edges);
   const [dirty, setDirty] = useState(false);
   const [preview, setPreview] = useState<{ program: Program; diff: ProgramDiff } | null>(null);
+  const [loadError, setLoadError] = useState('');
 
   const refresh = useCallback(async () => {
     try {
@@ -98,7 +101,7 @@ export default function App() {
 
   // 画布跟随服务端实际程序：版本变化且本地无未提交编辑时整体同步。
   useEffect(() => {
-    if (!state || dirty) return;
+    if (!state || dirty || !state.program?.nodes?.length) return;
     const flow = toFlow(state.program, state);
     setNodes(flow.nodes);
     setEdges(flow.edges);
@@ -146,22 +149,33 @@ export default function App() {
     try {
       const diff = await api.preview(program);
       setPreview({ program, diff });
+      setLoadError('');
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
+  // 载入失败时保留本地编辑与原暂停程序：不清 dirty、不关预览，
+  // 明确提示原版本未变，避免误以为新版本已生效。
   const confirmLoad = async (mode: 'restart' | 'preserve') => {
     if (!preview) return;
-    setPreview(null);
-    await runAction(() => api.load(preview.program, mode));
-    setDirty(false);
+    try {
+      const next = await api.load(preview.program, mode);
+      setState(next);
+      setPreview(null);
+      setLoadError('');
+      setDirty(false);
+      setError('');
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const resetDemo = async () => {
     setDirty(false);
     setPreview(null);
+    setLoadError('');
     await runAction(() => api.load(demoProgram, 'restart'));
   };
 
@@ -264,6 +278,8 @@ export default function App() {
               <li key={`${event.scan}-${index}`}><b>#{event.scan}</b>{event.message}</li>
             ))}
           </ol>
+
+          {state && <BranchPanel state={state} onState={setState} onError={setError} />}
         </aside>
       </section>
 
@@ -307,6 +323,9 @@ export default function App() {
             {!preview.diff.compatible && (
               <p className="modal-warning">包含不兼容变更，无法保留当前状态，只能明确重新开始。</p>
             )}
+            {loadError && (
+              <p className="modal-warning">载入失败，原暂停程序与版本 {state?.version} 保持不变：{loadError}</p>
+            )}
             <div className="modal-actions">
               {preview.diff.compatible && (
                 <button onClick={() => confirmLoad('preserve')}>保留兼容状态载入</button>
@@ -320,4 +339,3 @@ export default function App() {
     </main>
   );
 }
-

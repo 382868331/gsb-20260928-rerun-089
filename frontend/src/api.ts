@@ -1,4 +1,4 @@
-import type { ControllerState, Program, ProgramDiff } from './types';
+import type { ControllerState, Divergence, InputOverride, Program, ProgramDiff } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -21,4 +21,14 @@ export const api = {
   load: (program: Program, mode: 'restart' | 'preserve' = 'restart') =>
     request<ControllerState>(`/api/program?mode=${mode}`, { method: 'PUT', body: JSON.stringify(program) }),
   preview: (program: Program) => request<ProgramDiff>('/api/program/preview', { method: 'POST', body: JSON.stringify(program) }),
+  saveBoundary: (name: string) => request<ControllerState>('/api/boundaries', { method: 'POST', body: JSON.stringify({ name }) }),
+  createBranch: (boundaryId: string, name: string) =>
+    request<ControllerState>('/api/branches', { method: 'POST', body: JSON.stringify({ boundaryId, name }) }),
+  setOverrides: (id: string, overrides: InputOverride[]) =>
+    request<ControllerState>(`/api/branches/${id}/overrides`, { method: 'PUT', body: JSON.stringify({ overrides }) }),
+  scanBranch: (id: string, count: number) =>
+    request<ControllerState>(`/api/branches/${id}/scans`, { method: 'POST', body: JSON.stringify({ count }) }),
+  compareBranch: (id: string) => request<Divergence>(`/api/branches/${id}/compare`),
+  resetBranchElement: (id: string, node: string) =>
+    request<ControllerState>(`/api/branches/${id}/reset`, { method: 'POST', body: JSON.stringify({ node }) }),
 };

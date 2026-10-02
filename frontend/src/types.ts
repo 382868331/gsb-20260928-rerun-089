@@ -34,6 +34,44 @@ export interface ControllerState {
   outputs: Record<string, boolean>;
   timers: Record<string, { elapsedMs: number; q: boolean }>;
   log: Array<{ scan: number; message: string }>;
+  boundaries: BoundaryInfo[];
+  branches: BranchInfo[];
+}
+
+export interface BoundaryInfo {
+  id: string;
+  name: string;
+  scan: number;
+  version: number;
+}
+
+export interface InputOverride {
+  scan: number;
+  input: string;
+  value: boolean;
+}
+
+export interface BranchInfo {
+  id: string;
+  name: string;
+  boundaryId: string;
+  originScan: number;
+  version: number;
+  scan: number;
+  program: Program;
+  inputs: Record<string, boolean>;
+  overrides: InputOverride[];
+  outputs: Record<string, boolean>;
+  timers: Record<string, { elapsedMs: number; q: boolean }>;
+  resetLog: Array<{ scan: number; message: string }>;
+}
+
+export interface Divergence {
+  found: boolean;
+  scan: number;
+  outputs: string[];
+  internals: string[];
+  comparedScans: number;
 }
 
 export interface ProgramDiff {

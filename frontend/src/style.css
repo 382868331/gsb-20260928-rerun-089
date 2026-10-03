@@ -120,6 +120,20 @@ em { font-style: normal; font-size: 12px; color: #64748b; }
   border-radius: 10px;
   background: #f8fafc;
 }
+.branch-card.abandoned { opacity: 0.72; }
+.branch-status {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.branch-status.effective { background: #dcfce7; color: #166534; }
+.branch-status.pending { background: #e0f2fe; color: #075985; }
+.branch-status.failed { background: #fee2e2; color: #991b1b; }
+.source-table { margin: 6px 0; font-size: 12px; color: #475569; }
+.source-table table { width: 100%; margin-top: 4px; border-collapse: collapse; }
+.source-table td { border: 1px solid #e2e8f0; padding: 4px; vertical-align: top; }
+.secondary.danger { margin-top: 8px; background: white; color: #dc2626; border-color: #fecaca; }
 .branch-card h3 {
   display: flex;
   align-items: center;

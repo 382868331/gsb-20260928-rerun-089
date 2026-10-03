@@ -67,21 +67,41 @@ export interface Boundary {
 
 export interface Divergence {
   scan: number;
+  baselineId?: string;
+  baselineName?: string;
   outputs: string[];
   internals: string[];
+  timers?: string[];
+  internalStates?: Record<string, { value: boolean; elapsedMs?: number; q?: boolean }>;
   message: string;
+}
+
+export interface InputFrame {
+  scan: number;
+  inputs: Record<string, boolean>;
+  sources: Record<string, string>;
+  branchId: string;
+  branchName: string;
+  inputVersion: number;
 }
 
 export interface Branch {
   id: string;
   name: string;
   boundaryId: string;
+  parentId?: string;
+  depth?: number;
   baseScan: number;
   baseVersion: number;
+  inputVersion: number;
+  status: 'no-result' | 'effective' | string;
+  lastError?: string;
+  abandoned?: boolean;
   programName: string;
   program: Program;
   baseInputs: Record<string, boolean>;
-  segment: Array<Record<string, boolean>>;
+  segment?: Array<Record<string, boolean>>;
+  inputPlan?: InputFrame[];
   records: ScanRecord[];
   restarts: Array<{ scan: number; message: string }>;
   divergence?: Divergence | null;

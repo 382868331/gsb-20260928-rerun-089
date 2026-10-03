@@ -31,7 +31,7 @@ func main() {
 	manager := NewBranchManager(controller)
 	server := &Server{controller: controller, branches: manager, storePath: "branch_store.json"}
 	if err := manager.Load(server.storePath); err != nil {
-		log.Printf("分支存储载入失败，按空存储继续：%v", err)
+		log.Fatalf("分支存储载入失败，已保留磁盘文件且未覆盖：%v", err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/state", server.handleState)
@@ -44,8 +44,10 @@ func main() {
 	mux.HandleFunc("POST /api/program/preview", server.handleProgramPreview)
 	mux.HandleFunc("POST /api/boundaries", server.handleBoundary)
 	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
+	mux.HandleFunc("POST /api/branches/{id}/child", server.handleBranchChild)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
+	mux.HandleFunc("DELETE /api/branches/{id}", server.handleBranchAbandon)
 	staticFiles, err := fs.Sub(frontendAssets, "frontend/dist")
 	if err != nil {
 		log.Fatal(err)
@@ -261,6 +263,8 @@ func (s *Server) handleBoundary(writer http.ResponseWriter, request *http.Reques
 
 type branchCreateRequest struct {
 	BoundaryID string `json:"boundaryId"`
+	ParentID   string `json:"parentId"`
+	AtScan     int    `json:"atScan"`
 	Name       string `json:"name"`
 }
 
@@ -271,15 +275,43 @@ func (s *Server) handleBranchCreate(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	s.mu.Lock()
-	if _, err := s.branches.CreateBranch(req.BoundaryID, req.Name); err != nil {
+	var err error
+	if req.ParentID != "" {
+		_, err = s.branches.CreateChildBranch(req.ParentID, req.AtScan, req.Name)
+	} else {
+		_, err = s.branches.CreateBranch(req.BoundaryID, req.Name)
+	}
+	if err != nil {
 		s.mu.Unlock()
-		http.Error(writer, err.Error(), http.StatusNotFound)
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	state := s.controller.State()
 	s.attachBranches(&state)
 	s.persist()
 	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleBranchChild(writer http.ResponseWriter, request *http.Request) {
+	var req branchCreateRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.ParentID = request.PathValue("id")
+	s.mu.Lock()
+	branch, err := s.branches.CreateChildBranch(req.ParentID, req.AtScan, req.Name)
+	if err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writer.Header().Set("X-Branch-Id", branch.ID)
 	writeJSON(writer, http.StatusOK, state)
 }
 
@@ -321,6 +353,20 @@ func (s *Server) handleBranchRestart(writer http.ResponseWriter, request *http.R
 	if _, err := s.branches.RestartElement(request.PathValue("id"), req.NodeID); err != nil {
 		s.mu.Unlock()
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleBranchAbandon(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	if _, err := s.branches.AbandonBranch(request.PathValue("id")); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusNotFound)
 		return
 	}
 	state := s.controller.State()

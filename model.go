@@ -83,28 +83,54 @@ type Boundary struct {
 // Branch 是从某个扫描边界建立的输入试验分支：用一段替换输入
 // 从边界快照重新模拟，与原执行历史比较首次输出差异。
 type Branch struct {
-	ID          string                `json:"id"`
-	Name        string                `json:"name"`
-	BoundaryID  string                `json:"boundaryId"`
-	BaseScan    int                   `json:"baseScan"`
-	BaseVersion int                   `json:"baseVersion"`
-	ProgramName string                `json:"programName"`
-	Program     Program               `json:"program"`
-	BaseInputs  map[string]bool       `json:"baseInputs"`
-	BaseValues  map[string]bool       `json:"baseValues"`
-	BaseTimers  map[string]TimerState `json:"baseTimers"`
-	Segment     []map[string]bool     `json:"segment"`
-	Records     []ScanRecord          `json:"records"`
-	Restarts    []ScanEvent           `json:"restarts"`
-	Divergence  *Divergence           `json:"divergence,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	BoundaryID   string                `json:"boundaryId"`
+	ParentID     string                `json:"parentId,omitempty"`
+	Depth        int                   `json:"depth,omitempty"`
+	BaseScan     int                   `json:"baseScan"`
+	BaseVersion  int                   `json:"baseVersion"`
+	InputVersion int                   `json:"inputVersion"`
+	Status       string                `json:"status"`
+	LastError    string                `json:"lastError,omitempty"`
+	Abandoned    bool                  `json:"abandoned,omitempty"`
+	ProgramName  string                `json:"programName"`
+	Program      Program               `json:"program"`
+	BaseInputs   map[string]bool       `json:"baseInputs"`
+	BaseValues   map[string]bool       `json:"baseValues"`
+	BaseTimers   map[string]TimerState `json:"baseTimers"`
+	Segment      []map[string]bool     `json:"segment"`
+	InputPlan    []InputFrame          `json:"inputPlan"`
+	Records      []ScanRecord          `json:"records"`
+	Restarts     []ScanEvent           `json:"restarts"`
+	Divergence   *Divergence           `json:"divergence,omitempty"`
+}
+
+type InputFrame struct {
+	Scan         int               `json:"scan"`
+	Inputs       map[string]bool   `json:"inputs"`
+	Sources      map[string]string `json:"sources"`
+	BranchID     string            `json:"branchId"`
+	BranchName   string            `json:"branchName"`
+	InputVersion int               `json:"inputVersion"`
 }
 
 // Divergence 描述分支输出与原执行首次出现差异的位置及涉及的内部状态。
 type Divergence struct {
-	Scan      int      `json:"scan"`
-	Outputs   []string `json:"outputs"`
-	Internals []string `json:"internals"`
-	Message   string   `json:"message"`
+	Scan           int                      `json:"scan"`
+	BaselineID     string                   `json:"baselineId,omitempty"`
+	BaselineName   string                   `json:"baselineName,omitempty"`
+	Outputs        []string                 `json:"outputs"`
+	Internals      []string                 `json:"internals"`
+	Timers         []string                 `json:"timers,omitempty"`
+	InternalStates map[string]InternalState `json:"internalStates,omitempty"`
+	Message        string                   `json:"message"`
+}
+
+type InternalState struct {
+	Value     bool `json:"value"`
+	ElapsedMs int  `json:"elapsedMs,omitempty"`
+	Q         bool `json:"q,omitempty"`
 }
 
 type ScanEvent struct {

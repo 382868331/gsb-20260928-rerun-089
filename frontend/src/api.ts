@@ -24,8 +24,11 @@ export const api = {
   saveBoundary: (label: string) => request<ControllerState>('/api/boundaries', { method: 'POST', body: JSON.stringify({ label }) }),
   createBranch: (boundaryId: string, name: string) =>
     request<ControllerState>('/api/branches', { method: 'POST', body: JSON.stringify({ boundaryId, name }) }),
+  createChildBranch: (parentId: string, atScan: number, name: string) =>
+    request<ControllerState>(`/api/branches/${parentId}/child`, { method: 'POST', body: JSON.stringify({ parentId, atScan, name }) }),
   replaceSegment: (id: string, fromScan: number, inputs: Array<Record<string, boolean>>) =>
     request<ControllerState>(`/api/branches/${id}/segment`, { method: 'PUT', body: JSON.stringify({ fromScan, inputs }) }),
   restartElement: (id: string, nodeId: string) =>
     request<ControllerState>(`/api/branches/${id}/restart`, { method: 'POST', body: JSON.stringify({ nodeId }) }),
+  abandonBranch: (id: string) => request<ControllerState>(`/api/branches/${id}`, { method: 'DELETE' }),
 };

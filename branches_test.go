@@ -239,3 +239,109 @@ func TestBranchPersistenceRoundTrip(t *testing.T) {
 		t.Fatal("重开后新建分支 id 不能冲突")
 	}
 }
+
+func TestChildBranchUsesOnlyExecutedRecordsAndOverridesOverlap(t *testing.T) {
+	controller, err := NewController(demoProgram())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewBranchManager(controller)
+	controller.Start()
+	_ = controller.SetInput("start", true)
+	controller.Scan()
+	_ = controller.SetInput("start", false)
+	controller.Scan()
+	boundary := manager.SaveBoundary("")
+	parent, err := manager.CreateBranch(boundary.ID, "父分支")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ReplaceSegment(parent.ID, parent.BaseScan+1, []map[string]bool{{}, {}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateChildBranch(parent.ID, parent.BaseScan+5, "子分支"); err == nil {
+		t.Fatal("不能从尚未执行的候选扫描派生子分支")
+	}
+	child, err := manager.CreateChildBranch(parent.ID, parent.BaseScan+1, "子分支")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(child.InputPlan) != 1 || child.InputPlan[0].Scan != parent.BaseScan+2 {
+		t.Fatalf("子分支应只继承起点之后的父分支计划：%+v", child.InputPlan)
+	}
+	if _, err := manager.ReplaceSegment(child.ID, child.BaseScan+1, []map[string]bool{{"stop": true}}); err != nil {
+		t.Fatal(err)
+	}
+	frame := child.InputPlan[0]
+	if !frame.Inputs["stop"] {
+		t.Fatal("重叠范围应采用子分支的新输入")
+	}
+	if frame.Sources["stop"] != "子分支 输入版本 1" {
+		t.Fatalf("重叠输入必须标明来自本次子分支版本：%s", frame.Sources["stop"])
+	}
+	if child.Divergence == nil || child.Divergence.BaselineID != parent.ID {
+		t.Fatal("子分支必须与父分支真实记录比较")
+	}
+	if child.Divergence.Scan != child.BaseScan+1 {
+		t.Fatalf("首次差异位置错误：%+v", child.Divergence)
+	}
+}
+
+func TestFailedReplacementKeepsPreviousBranchResult(t *testing.T) {
+	controller, err := NewController(demoProgram())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewBranchManager(controller)
+	controller.Start()
+	_ = controller.SetInput("start", true)
+	controller.Scan()
+	boundary := manager.SaveBoundary("")
+	branch, err := manager.CreateBranch(boundary.ID, "失败回滚")
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := []map[string]bool{{}, {}}
+	if _, err := manager.ReplaceSegment(branch.ID, branch.BaseScan+1, good); err != nil {
+		t.Fatal(err)
+	}
+	oldRecords := len(branch.Records)
+	oldVersion := branch.InputVersion
+	if _, err := manager.ReplaceSegment(branch.ID, branch.BaseScan+1, []map[string]bool{{"missing": true}}); err == nil {
+		t.Fatal("不存在的输入必须拒绝")
+	}
+	if len(branch.Records) != oldRecords || branch.InputVersion != oldVersion || branch.LastError == "" {
+		t.Fatal("失败替换必须保留已有输入版本、扫描记录并记录错误")
+	}
+}
+
+func TestBranchArchiveFindsOriginalAfterProgramRevision(t *testing.T) {
+	controller, err := NewController(demoProgram())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewBranchManager(controller)
+	controller.Start()
+	_ = controller.SetInput("start", true)
+	controller.Scan()
+	boundary := manager.SaveBoundary("")
+	for range 2 {
+		controller.Scan()
+	}
+	branch, err := manager.CreateBranch(boundary.ID, "修订后比较")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised := demoProgram()
+	revised.Nodes = revised.Nodes[:len(revised.Nodes)-1]
+	revised.Edges = revised.Edges[:len(revised.Edges)-1]
+	if err := controller.Load(revised); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ReplaceSegment(branch.ID, branch.BaseScan+1, []map[string]bool{{"stop": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if branch.Divergence == nil {
+		t.Fatal("程序修订后仍应从原始扫描档案找到比较基准")
+	}
+}

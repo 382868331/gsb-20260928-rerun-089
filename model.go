@@ -83,28 +83,50 @@ type Boundary struct {
 // Branch 是从某个扫描边界建立的输入试验分支：用一段替换输入
 // 从边界快照重新模拟，与原执行历史比较首次输出差异。
 type Branch struct {
-	ID          string                `json:"id"`
-	Name        string                `json:"name"`
-	BoundaryID  string                `json:"boundaryId"`
-	BaseScan    int                   `json:"baseScan"`
-	BaseVersion int                   `json:"baseVersion"`
-	ProgramName string                `json:"programName"`
-	Program     Program               `json:"program"`
-	BaseInputs  map[string]bool       `json:"baseInputs"`
-	BaseValues  map[string]bool       `json:"baseValues"`
-	BaseTimers  map[string]TimerState `json:"baseTimers"`
-	Segment     []map[string]bool     `json:"segment"`
-	Records     []ScanRecord          `json:"records"`
-	Restarts    []ScanEvent           `json:"restarts"`
-	Divergence  *Divergence           `json:"divergence,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	BoundaryID   string                `json:"boundaryId"`
+	ParentID     string                `json:"parentId,omitempty"`
+	ParentName   string                `json:"parentName,omitempty"`
+	ForkScan     int                   `json:"forkScan,omitempty"`
+	BaseScan     int                   `json:"baseScan"`
+	BaseVersion  int                   `json:"baseVersion"`
+	InputVersion int                   `json:"inputVersion"`
+	Status       string                `json:"status"`
+	ProgramName  string                `json:"programName"`
+	Program      Program               `json:"program"`
+	BaseInputs   map[string]bool       `json:"baseInputs"`
+	BaseValues   map[string]bool       `json:"baseValues"`
+	BaseTimers   map[string]TimerState `json:"baseTimers"`
+	Segment      []map[string]bool     `json:"segment"`
+	Origins      []RowOrigin           `json:"origins"`
+	Records      []ScanRecord          `json:"records"`
+	Restarts     []ScanEvent           `json:"restarts"`
+	OverlapNotes []string              `json:"overlapNotes"`
+	Divergence   *Divergence           `json:"divergence,omitempty"`
+}
+
+// RowOrigin 说明分支中某一扫描实际采用的输入来自哪里：
+// original=原执行真实扫描、parent=父分支模拟结果（非真实扫描）、
+// self=本分支自己的替换。未执行的候选片段不会出现在这里。
+type RowOrigin struct {
+	Scan             int             `json:"scan"`
+	Source           string          `json:"source"`
+	SourceBranchID   string          `json:"sourceBranchId,omitempty"`
+	SourceBranchName string          `json:"sourceBranchName,omitempty"`
+	Inputs           map[string]bool `json:"inputs"`
+	Note             string          `json:"note,omitempty"`
 }
 
 // Divergence 描述分支输出与原执行首次出现差异的位置及涉及的内部状态。
 type Divergence struct {
-	Scan      int      `json:"scan"`
-	Outputs   []string `json:"outputs"`
-	Internals []string `json:"internals"`
-	Message   string   `json:"message"`
+	Scan          int                   `json:"scan"`
+	CompareTarget string                `json:"compareTarget"`
+	Outputs       []string              `json:"outputs"`
+	Internals     []string              `json:"internals"`
+	InternalState map[string]bool       `json:"internalState"`
+	TimerState    map[string]TimerState `json:"timerState"`
+	Message       string                `json:"message"`
 }
 
 type ScanEvent struct {

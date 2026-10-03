@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 )
 
 // BranchManager 管理扫描边界与输入试验分支。边界是只读快照，
@@ -20,6 +21,15 @@ type BranchManager struct {
 func NewBranchManager(controller *Controller) *BranchManager {
 	return &BranchManager{controller: controller, nextID: 1}
 }
+
+const (
+	// branchStatusCreated：分支已创建，但尚无任何模拟结果（尚无结果）。
+	branchStatusCreated = "created"
+	// branchStatusApplied：已执行替换输入段并产生可比较的模拟结果（已经生效）。
+	branchStatusApplied = "applied"
+	// branchStatusAbandoned：用户放弃的中间分支，只读保留，不再可操作。
+	branchStatusAbandoned = "abandoned"
+)
 
 // SaveBoundary 把当前扫描序号上的输入、内部状态与定时累计保存为边界。
 func (m *BranchManager) SaveBoundary(label string) Boundary {
@@ -55,20 +65,129 @@ func (m *BranchManager) CreateBranch(boundaryID, name string) (*Branch, error) {
 		name = fmt.Sprintf("试验分支（基于扫描 #%d）", boundary.Scan)
 	}
 	branch := &Branch{
-		ID:          m.allocID("branch"),
-		Name:        name,
-		BoundaryID:  boundary.ID,
-		BaseScan:    boundary.Scan,
-		BaseVersion: boundary.Version,
-		ProgramName: boundary.Program.Name,
-		Program:     boundary.Program,
-		BaseInputs:  cloneBools(boundary.Inputs),
-		BaseValues:  cloneBools(boundary.Values),
-		BaseTimers:  cloneTimers(boundary.Timers),
+		ID:           m.allocID("branch"),
+		Name:         name,
+		BoundaryID:   boundary.ID,
+		BaseScan:     boundary.Scan,
+		BaseVersion:  boundary.Version,
+		InputVersion: 0,
+		Status:       branchStatusCreated,
+		ProgramName:  boundary.Program.Name,
+		Program:      boundary.Program,
+		BaseInputs:   cloneBools(boundary.Inputs),
+		BaseValues:   cloneBools(boundary.Values),
+		BaseTimers:   cloneTimers(boundary.Timers),
+		Segment:      []map[string]bool{},
+		Origins:      []RowOrigin{},
+		Records:      []ScanRecord{},
+		Restarts:     []ScanEvent{},
+		OverlapNotes: []string{},
 	}
 	m.branches = append(m.branches, branch)
 	m.controller.addLog(fmt.Sprintf("已从边界 %s 建立试验分支 %s（版本 %d，扫描 #%d）",
 		boundary.ID, branch.ID, branch.BaseVersion, branch.BaseScan))
+	return branch, nil
+}
+
+// ForkBranch 在一个试验分支上继续派生子分支。父分支在 forkScan 及之前
+// 已发生的输出属于只读共同前缀；forkScan 之后父分支的候选输入默认作为
+// “父分支模拟输入”延续（明确标注来源，不算真实扫描），子分支可以对
+// 不同时间段做多轮替换。
+func (m *BranchManager) ForkBranch(parentID, name string, forkScan int) (*Branch, error) {
+	parent := m.findBranch(parentID)
+	if parent == nil {
+		return nil, fmt.Errorf("父分支 %s 不存在", parentID)
+	}
+	if parent.Status == branchStatusAbandoned {
+		return nil, fmt.Errorf("父分支 %s 已放弃，不能再派生", parentID)
+	}
+	if len(parent.Records) == 0 {
+		return nil, errors.New("父分支尚无模拟结果，请先在父分支替换输入段后再派生")
+	}
+	if forkScan <= parent.BaseScan {
+		return nil, fmt.Errorf("派生点 %d 必须晚于父分支起点扫描 #%d：共同前缀只读", forkScan, parent.BaseScan)
+	}
+	forkRecord := findRecord(parent.Records, forkScan, parent.BaseVersion)
+	if forkRecord == nil {
+		return nil, fmt.Errorf("派生点扫描 #%d 超出父分支已模拟范围（当前到扫描 #%d）", forkScan, parent.BaseScan+len(parent.Records))
+	}
+	if _, err := compileProgram(parent.Program); err != nil {
+		return nil, fmt.Errorf("父分支程序无法编译：%w", err)
+	}
+	if name == "" {
+		name = fmt.Sprintf("子分支（%s @ 扫描 #%d）", parent.Name, forkScan)
+	}
+	values := cloneBools(forkRecord.Internals)
+	for id, value := range forkRecord.Outputs {
+		values[id] = value
+	}
+	child := &Branch{
+		ID:           m.allocID("branch"),
+		Name:         name,
+		BoundaryID:   parent.BoundaryID,
+		ParentID:     parent.ID,
+		ParentName:   parent.Name,
+		ForkScan:     forkScan,
+		BaseScan:     forkScan,
+		BaseVersion:  parent.BaseVersion,
+		InputVersion: 0,
+		Status:       branchStatusCreated,
+		ProgramName:  parent.ProgramName,
+		Program:      parent.Program,
+		BaseInputs:   cloneBools(forkRecord.Inputs),
+		BaseValues:   values,
+		BaseTimers:   cloneTimers(forkRecord.Timers),
+		Segment:      []map[string]bool{},
+		Origins:      []RowOrigin{},
+		Records:      []ScanRecord{},
+		Restarts:     []ScanEvent{},
+		OverlapNotes: []string{},
+	}
+	// 延续父分支派生点之后已经模拟出的候选输入段，来源标注为父分支模拟。
+	for _, record := range parent.Records {
+		if record.Scan <= forkScan {
+			continue
+		}
+		child.Segment = append(child.Segment, cloneBools(record.Inputs))
+		child.Origins = append(child.Origins, RowOrigin{
+			Scan:             record.Scan,
+			Source:           "parent",
+			SourceBranchID:   parent.ID,
+			SourceBranchName: parent.Name,
+			Inputs:           cloneBools(record.Inputs),
+			Note:             fmt.Sprintf("继承自父分支 %s 的模拟输入（非真实扫描）", parent.Name),
+		})
+	}
+	m.branches = append(m.branches, child)
+	m.controller.addLog(fmt.Sprintf("已从父分支 %s 在扫描 #%d 派生子分支 %s", parent.ID, forkScan, child.ID))
+	if len(child.Segment) > 0 {
+		if err := m.simulate(child); err != nil {
+			m.branches = m.branches[:len(m.branches)-1]
+			return nil, err
+		}
+		child.Status = branchStatusApplied
+	}
+	return child, nil
+}
+
+// AbandonBranch 放弃一个中间分支：记录保留、只读，不再接受替换或派生，
+// 但不会删除任何扫描记录，也不影响其他分支与原执行。
+func (m *BranchManager) AbandonBranch(branchID string) (*Branch, error) {
+	branch := m.findBranch(branchID)
+	if branch == nil {
+		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
+	}
+	if branch.Status == branchStatusAbandoned {
+		return branch, nil
+	}
+	for _, other := range m.branches {
+		if other.ParentID == branch.ID && other.Status != branchStatusAbandoned {
+			return nil, fmt.Errorf("分支 %s 仍有未放弃的子分支，不能放弃", branchID)
+		}
+	}
+	branch.Status = branchStatusAbandoned
+	branch.OverlapNotes = append(branch.OverlapNotes, fmt.Sprintf("该中间分支已被用户放弃（记录只读保留）"))
+	m.controller.addLog(fmt.Sprintf("分支 %s 已放弃，历史记录保留", branch.ID))
 	return branch, nil
 }
 
@@ -78,6 +197,9 @@ func (m *BranchManager) ReplaceSegment(branchID string, fromScan int, inputs []m
 	branch := m.findBranch(branchID)
 	if branch == nil {
 		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
+	}
+	if branch.Status == branchStatusAbandoned {
+		return nil, fmt.Errorf("分支 %s 已放弃，替换输入为只读历史，不能再操作", branchID)
 	}
 	if fromScan <= branch.BaseScan {
 		return nil, fmt.Errorf("替换起点 %d 必须晚于分支起点扫描 #%d：共同前缀只读", fromScan, branch.BaseScan)
@@ -100,12 +222,65 @@ func (m *BranchManager) ReplaceSegment(branchID string, fromScan int, inputs []m
 	if prefix > len(branch.Segment) {
 		return nil, fmt.Errorf("替换起点 %d 超出了已模拟范围（当前到扫描 #%d）", fromScan, branch.BaseScan+len(branch.Segment))
 	}
-	branch.Segment = append(append([]map[string]bool{}, branch.Segment[:prefix]...), inputs...)
+	oldOrigins := append([]RowOrigin{}, branch.Origins...)
+	oldSegment := append([]map[string]bool{}, branch.Segment...)
+	notes := []string{}
+	for i := range inputs {
+		scan := fromScan + i
+		if prefix+i < len(oldOrigins) {
+			notes = append(notes, fmt.Sprintf("扫描 #%d 与已模拟范围重叠：原候选（%s）作废，本次实际采用新提交的输入；未执行的候选不算真实扫描",
+				scan, originLabel(oldOrigins[prefix+i])))
+		}
+	}
+	segment := append(append([]map[string]bool{}, branch.Segment[:prefix]...), inputs...)
+	origins := append([]RowOrigin{}, oldOrigins[:min(prefix, len(oldOrigins))]...)
+	for i, row := range inputs {
+		origins = append(origins, RowOrigin{
+			Scan:   fromScan + i,
+			Source: "self",
+			Inputs: cloneBools(row),
+			Note:   fmt.Sprintf("输入版本 #%d：本次替换实际采用", branch.InputVersion+1),
+		})
+	}
+	branch.Segment = segment
+	branch.Origins = origins
+	branch.InputVersion++
+	branch.OverlapNotes = notes
 	if err := m.simulate(branch); err != nil {
+		// 模拟失败：回滚本次替换，保留此前已生效的输入版本与模拟结果。
+		branch.Segment = append([]map[string]bool{}, oldSegment...)
+		branch.Origins = oldOrigins
+		branch.InputVersion--
+		branch.OverlapNotes = []string{}
+		_ = m.simulate(branch)
 		return nil, err
 	}
-	m.controller.addLog(fmt.Sprintf("分支 %s 已替换自扫描 #%d 起的 %d 个扫描输入", branch.ID, fromScan, len(inputs)))
+	branch.Status = branchStatusApplied
+	m.controller.addLog(fmt.Sprintf("分支 %s 已替换自扫描 #%d 起的 %d 个扫描输入（输入版本 #%d）", branch.ID, fromScan, len(inputs), branch.InputVersion))
 	return branch, nil
+}
+
+func originLabel(origin RowOrigin) string {
+	switch origin.Source {
+	case "original":
+		return "原执行真实扫描"
+	case "parent":
+		if origin.SourceBranchName != "" {
+			return "父分支 " + origin.SourceBranchName + " 模拟（非真实扫描）"
+		}
+		return "父分支模拟（非真实扫描）"
+	case "self":
+		return "本分支之前的替换候选"
+	default:
+		return "未知来源"
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // RestartElement 在分支起点将某个元件的状态明确清零（定时器累计或
@@ -115,6 +290,9 @@ func (m *BranchManager) RestartElement(branchID, nodeID string) (*Branch, error)
 	branch := m.findBranch(branchID)
 	if branch == nil {
 		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
+	}
+	if branch.Status == branchStatusAbandoned {
+		return nil, fmt.Errorf("分支 %s 已放弃，不能再重新开始元件", branchID)
 	}
 	var node *Node
 	for i := range branch.Program.Nodes {
@@ -178,27 +356,77 @@ func (m *BranchManager) simulate(branch *Branch) error {
 }
 
 // divergence 找到分支输出与原执行历史（同版本、同扫描序号）首次
-// 不一致的位置，并列出该位置涉及的内部状态。
+// 不一致的位置，并列出该位置涉及的内部状态。子分支则与父分支的
+// 模拟记录比较——子分支结果绝不接回原执行。
 func (m *BranchManager) divergence(branch *Branch) *Divergence {
+	var baselineName string
+	var baseline []ScanRecord
+	if branch.ParentID != "" {
+		if parent := m.findBranch(branch.ParentID); parent != nil {
+			baseline = parent.Records
+			baselineName = fmt.Sprintf("父分支 %s", parent.Name)
+		} else {
+			baselineName = "父分支（已不存在）"
+		}
+	} else {
+		baseline = m.controller.history
+		baselineName = "原执行"
+	}
 	for _, record := range branch.Records {
-		base := findRecord(m.controller.history, record.Scan, branch.BaseVersion)
+		base := findRecord(baseline, record.Scan, branch.BaseVersion)
 		if base == nil {
 			continue
 		}
 		outputs := diffKeys(record.Outputs, base.Outputs)
+		internals := diffKeys(record.Internals, base.Internals)
 		if len(outputs) == 0 {
 			continue
 		}
-		internals := diffKeys(record.Internals, base.Internals)
 		return &Divergence{
-			Scan:      record.Scan,
-			Outputs:   outputs,
-			Internals: internals,
-			Message: fmt.Sprintf("扫描 #%d 输出首次出现差异：%s；涉及内部状态：%s",
-				record.Scan, joinOrNone(outputs), joinOrNone(internals)),
+			Scan:          record.Scan,
+			CompareTarget: baselineName,
+			Outputs:       outputs,
+			Internals:     internals,
+			InternalState: cloneBools(record.Internals),
+			TimerState:    cloneTimers(record.Timers),
+			Message: fmt.Sprintf("与%s比较，扫描 #%d 输出首次出现差异：%s；当时内部状态：%s；定时累计：%s",
+				baselineName, record.Scan, joinOrNone(outputs), formatState(record.Internals), formatTimers(record.Timers)),
 		}
 	}
 	return nil
+}
+
+func formatState(state map[string]bool) string {
+	ids := make([]string, 0, len(state))
+	for id := range state {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "无"
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, fmt.Sprintf("%s=%t", id, state[id]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatTimers(timers map[string]TimerState) string {
+	ids := make([]string, 0, len(timers))
+	for id := range timers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "无"
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		timer := timers[id]
+		parts = append(parts, fmt.Sprintf("%s=%dms/Q=%t", id, timer.ElapsedMs, timer.Q))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func findRecord(history []ScanRecord, scan, version int) *ScanRecord {
@@ -278,6 +506,114 @@ func (m *BranchManager) Branches() []Branch {
 	return result
 }
 
+// FindTrials 按程序修订版本、输入版本与扫描序号找回各次试验。
+// 任一条件为零值表示不限制；只返回匹配的边界与分支（含已放弃分支）。
+func (m *BranchManager) FindTrials(programVersion, inputVersion, scan int) ([]Boundary, []Branch) {
+	boundarySet := map[string]bool{}
+	var boundaries []Boundary
+	var branches []Branch
+	for _, branch := range m.branches {
+		if programVersion != 0 && branch.BaseVersion != programVersion {
+			continue
+		}
+		if inputVersion != 0 && branch.InputVersion != inputVersion {
+			continue
+		}
+		if scan != 0 && !(branch.BaseScan == scan || branch.ForkScan == scan) {
+			matched := false
+			for _, record := range branch.Records {
+				if record.Scan == scan {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		branches = append(branches, *branch)
+		if !boundarySet[branch.BoundaryID] {
+			boundarySet[branch.BoundaryID] = true
+			if boundary := m.findBoundary(branch.BoundaryID); boundary != nil {
+				boundaries = append(boundaries, *boundary)
+			}
+		}
+	}
+	if boundaries == nil {
+		boundaries = []Boundary{}
+	}
+	if branches == nil {
+		branches = []Branch{}
+	}
+	return boundaries, branches
+}
+
+// MarshalJSON 保证所有切片字段序列化为 [] 而不是 null，避免前端
+// 刚创建、尚无结果的分支读取 null.length 时白屏。
+func (b Branch) MarshalJSON() ([]byte, error) {
+	alias := struct {
+		ID           string                `json:"id"`
+		Name         string                `json:"name"`
+		BoundaryID   string                `json:"boundaryId"`
+		ParentID     string                `json:"parentId,omitempty"`
+		ParentName   string                `json:"parentName,omitempty"`
+		ForkScan     int                   `json:"forkScan,omitempty"`
+		BaseScan     int                   `json:"baseScan"`
+		BaseVersion  int                   `json:"baseVersion"`
+		InputVersion int                   `json:"inputVersion"`
+		Status       string                `json:"status"`
+		ProgramName  string                `json:"programName"`
+		Program      Program               `json:"program"`
+		BaseInputs   map[string]bool       `json:"baseInputs"`
+		BaseValues   map[string]bool       `json:"baseValues"`
+		BaseTimers   map[string]TimerState `json:"baseTimers"`
+		Segment      []map[string]bool     `json:"segment"`
+		Origins      []RowOrigin           `json:"origins"`
+		Records      []ScanRecord          `json:"records"`
+		Restarts     []ScanEvent           `json:"restarts"`
+		OverlapNotes []string              `json:"overlapNotes"`
+		Divergence   *Divergence           `json:"divergence,omitempty"`
+	}{
+		ID:           b.ID,
+		Name:         b.Name,
+		BoundaryID:   b.BoundaryID,
+		ParentID:     b.ParentID,
+		ParentName:   b.ParentName,
+		ForkScan:     b.ForkScan,
+		BaseScan:     b.BaseScan,
+		BaseVersion:  b.BaseVersion,
+		InputVersion: b.InputVersion,
+		Status:       b.Status,
+		ProgramName:  b.ProgramName,
+		Program:      b.Program,
+		BaseInputs:   b.BaseInputs,
+		BaseValues:   b.BaseValues,
+		BaseTimers:   b.BaseTimers,
+		Segment:      b.Segment,
+		Origins:      b.Origins,
+		Records:      b.Records,
+		Restarts:     b.Restarts,
+		OverlapNotes: b.OverlapNotes,
+		Divergence:   b.Divergence,
+	}
+	if alias.Segment == nil {
+		alias.Segment = []map[string]bool{}
+	}
+	if alias.Origins == nil {
+		alias.Origins = []RowOrigin{}
+	}
+	if alias.Records == nil {
+		alias.Records = []ScanRecord{}
+	}
+	if alias.Restarts == nil {
+		alias.Restarts = []ScanEvent{}
+	}
+	if alias.OverlapNotes == nil {
+		alias.OverlapNotes = []string{}
+	}
+	return json.Marshal(alias)
+}
+
 type branchStore struct {
 	NextID     int        `json:"nextId"`
 	Boundaries []Boundary `json:"boundaries"`
@@ -312,6 +648,30 @@ func (m *BranchManager) Load(path string) error {
 	m.branches = store.Branches
 	if m.nextID < 1 {
 		m.nextID = 1
+	}
+	for _, branch := range m.branches {
+		if branch.Segment == nil {
+			branch.Segment = []map[string]bool{}
+		}
+		if branch.Origins == nil {
+			branch.Origins = []RowOrigin{}
+		}
+		if branch.Records == nil {
+			branch.Records = []ScanRecord{}
+		}
+		if branch.Restarts == nil {
+			branch.Restarts = []ScanEvent{}
+		}
+		if branch.OverlapNotes == nil {
+			branch.OverlapNotes = []string{}
+		}
+		if branch.Status == "" {
+			if len(branch.Records) > 0 {
+				branch.Status = branchStatusApplied
+			} else {
+				branch.Status = branchStatusCreated
+			}
+		}
 	}
 	return nil
 }

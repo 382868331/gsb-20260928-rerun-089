@@ -67,22 +67,45 @@ export interface Boundary {
 
 export interface Divergence {
   scan: number;
+  compareTarget: string;
   outputs: string[];
   internals: string[];
+  internalState: Record<string, boolean>;
+  timerState: Record<string, { elapsedMs: number; q: boolean }>;
   message: string;
 }
+
+export type RowSource = 'original' | 'parent' | 'self';
+
+export interface RowOrigin {
+  scan: number;
+  source: RowSource;
+  sourceBranchId?: string;
+  sourceBranchName?: string;
+  inputs: Record<string, boolean>;
+  note?: string;
+}
+
+export type BranchStatus = 'created' | 'applied' | 'abandoned';
 
 export interface Branch {
   id: string;
   name: string;
   boundaryId: string;
+  parentId?: string;
+  parentName?: string;
+  forkScan?: number;
   baseScan: number;
   baseVersion: number;
+  inputVersion: number;
+  status: BranchStatus;
   programName: string;
   program: Program;
   baseInputs: Record<string, boolean>;
   segment: Array<Record<string, boolean>>;
+  origins: RowOrigin[];
   records: ScanRecord[];
   restarts: Array<{ scan: number; message: string }>;
+  overlapNotes: string[];
   divergence?: Divergence | null;
 }

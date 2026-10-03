@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Component, type ErrorInfo, type ReactNode } from 'react';
 import {
   Background,
   Controls,
@@ -22,6 +23,34 @@ import { nodeTypes } from './ControlNode';
 import { BranchPanel } from './BranchPanel';
 import type { ControllerState, Program, ProgramDiff } from './types';
 import './style.css';
+
+// ErrorBoundary 捕获渲染异常（例如服务端返回空值字段），显示可恢复提示
+// 而不是整页白屏；状态来自服务端，刷新即可重新载入。
+export class ErrorBoundary extends Component<{ children: ReactNode }, { message: string }> {
+  state = { message: '' };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { message: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error('页面渲染异常：', error, info);
+  }
+
+  render() {
+    if (this.state.message) {
+      return (
+        <main style={{ padding: 24 }}>
+          <h1>页面渲染出现异常</h1>
+          <p>异常信息：{this.state.message}</p>
+          <p>服务端的暂停程序、边界与分支记录均未被修改，请刷新页面重新载入。</p>
+          <button onClick={() => window.location.reload()}>重新载入页面</button>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const initialFlow = toFlow(demoProgram, null);
 
@@ -69,7 +98,7 @@ function fromFlow(name: string, nodes: Node[], edges: Edge[]): Program {
   };
 }
 
-export default function App() {
+export function AppInner() {
   const [state, setState] = useState<ControllerState | null>(null);
   const [error, setError] = useState('');
   const [nodes, setNodes] = useNodesState<Node>(initialFlow.nodes);

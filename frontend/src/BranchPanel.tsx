@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search } from 'lucide-react';
 import { api } from './api';
-import type { Branch, ControllerState } from './types';
+import type { Branch, ControllerState, RowOrigin } from './types';
 
 const SEGMENT_ROWS = 3;
 
@@ -10,14 +10,40 @@ type Props = {
   runAction: (action: () => Promise<ControllerState>) => void;
 };
 
+function StatusBadge({ branch }: { branch: Branch }) {
+  if (branch.status === 'abandoned') {
+    return <span className="status-badge abandoned">已放弃（只读）</span>;
+  }
+  if (branch.status === 'applied') {
+    return <span className="status-badge applied">已生效 · 输入版本 #{branch.inputVersion}</span>;
+  }
+  return <span className="status-badge created">创建失败重试 / 尚无结果</span>;
+}
+
+function originText(origin: RowOrigin): string {
+  switch (origin.source) {
+    case 'original':
+      return '原执行真实扫描';
+    case 'parent':
+      return `父分支 ${origin.sourceBranchName ?? ''} 模拟（非真实扫描）`;
+    case 'self':
+      return '本分支替换';
+    default:
+      return '未知来源';
+  }
+}
+
 function SegmentEditor({ branch, runAction }: { branch: Branch; runAction: Props['runAction'] }) {
   const inputNodes = branch.program.nodes.filter((node) => node.kind === 'INPUT');
+  const segment = branch.segment ?? [];
   const [fromScan, setFromScan] = useState(branch.baseScan + 1);
   const [grid, setGrid] = useState<boolean[][]>(() =>
     Array.from({ length: SEGMENT_ROWS }, (_, row) =>
-      inputNodes.map((node) => Boolean(branch.segment[row]?.[node.id])),
+      inputNodes.map((node) => Boolean(segment[row]?.[node.id])),
     ),
   );
+
+  if (branch.status === 'abandoned') return null;
 
   const toggle = (row: number, col: number) => {
     setGrid((current) => current.map((line, r) => (r === row ? line.map((v, c) => (c === col ? !v : v)) : line)));
@@ -31,7 +57,7 @@ function SegmentEditor({ branch, runAction }: { branch: Branch; runAction: Props
   return (
     <div className="segment-editor">
       <label>
-        替换起点扫描
+        替换起点扫描（必须晚于分支起点 #{branch.baseScan}{branch.forkScan ? ` / 派生点 #${branch.forkScan}` : ''}）
         <input
           type="number"
           min={branch.baseScan + 1}
@@ -64,31 +90,89 @@ function SegmentEditor({ branch, runAction }: { branch: Branch; runAction: Props
   );
 }
 
+function ForkRow({ branch, runAction }: { branch: Branch; runAction: Props['runAction'] }) {
+  const records = branch.records ?? [];
+  const [forkScan, setForkScan] = useState(records.length > 0 ? records[records.length - 1].scan : branch.baseScan);
+  const [name, setName] = useState('');
+  if (branch.status === 'abandoned' || records.length === 0) return null;
+  return (
+    <div className="fork-row">
+      <label>
+        派生点扫描
+        <input type="number" min={branch.baseScan + 1} max={records[records.length - 1].scan} value={forkScan}
+          onChange={(event) => setForkScan(Number(event.target.value))} />
+      </label>
+      <input className="fork-name" placeholder="子分支名称（可空）" value={name} onChange={(event) => setName(event.target.value)} />
+      <button onClick={() => runAction(() => api.forkBranch(branch.id, forkScan, name))}>
+        <Share2 size={14} />从此分支派生子分支
+      </button>
+    </div>
+  );
+}
+
 function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['runAction'] }) {
   const restartable = branch.program.nodes.filter((node) => node.kind === 'TON' || node.kind === 'SR');
   const [nodeId, setNodeId] = useState(restartable[0]?.id ?? '');
   const labelOf = (id: string) => branch.program.nodes.find((node) => node.id === id)?.label ?? id;
+  const origins = branch.origins ?? [];
+  const records = branch.records ?? [];
+  const restarts = branch.restarts ?? [];
+  const notes = branch.overlapNotes ?? [];
 
   return (
-    <div className="branch-card">
+    <div className={`branch-card ${branch.status === 'abandoned' ? 'abandoned' : ''}`}>
       <h3><GitBranch size={14} />{branch.name}</h3>
       <p className="branch-meta">
-        起点扫描 #{branch.baseScan} · 程序版本 {branch.baseVersion} · {branch.programName}
-        {branch.segment.length > 0 ? ` · 已替换 ${branch.segment.length} 个扫描` : ''}
+        <StatusBadge branch={branch} />
+        {branch.parentId
+          ? ` 派生自 ${branch.parentName ?? branch.parentId} @ #${branch.forkScan}`
+          : ` 边界 ${branch.boundaryId}`}
+        {' · '}起点 #{branch.baseScan} · 程序版本 {branch.baseVersion}
+        {origins.length > 0 ? ` · 已模拟 ${origins.length} 个扫描` : ''}
       </p>
-      {branch.divergence ? (
-        <p className="divergence">{branch.divergence.message}</p>
-      ) : (
-        <p className="branch-meta">{branch.records.length > 0 ? '与原执行输出一致' : '尚未替换输入段'}</p>
+      {branch.status === 'created' && origins.length === 0 && (
+        <p className="branch-meta">尚无结果：分支已创建，但还没有实际采用任何替换输入。</p>
       )}
-      {branch.divergence && (
-        <p className="branch-meta">
-          差异输出：{branch.divergence.outputs.map(labelOf).join('、') || '无'}；
-          涉及内部状态：{branch.divergence.internals.map(labelOf).join('、') || '无'}
-        </p>
+      {branch.status === 'created' && origins.length > 0 && (
+        <p className="branch-meta">已继承父分支候选输入，可直接比较或继续替换。</p>
+      )}
+      {branch.divergence ? (
+        <>
+          <p className="divergence">{branch.divergence.message}</p>
+          <p className="branch-meta">
+            差异输出：{branch.divergence.outputs.map(labelOf).join('、') || '无'}；
+            涉及内部状态：{branch.divergence.internals.map(labelOf).join('、') || '无'}
+          </p>
+          <p className="branch-meta">
+            当时内部状态：{Object.entries(branch.divergence.internalState ?? {}).map(([id, value]) => `${labelOf(id)}=${value ? '1' : '0'}`).join('，') || '无'}；
+            定时累计：{Object.entries(branch.divergence.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无'}
+          </p>
+        </>
+      ) : (
+        branch.status === 'applied' && <p className="branch-meta">与{branch.parentId ? '父分支' : '原执行'}输出一致（已比较 {records.length} 个扫描）</p>
+      )}
+      {notes.length > 0 && (
+        <ul className="overlap-notes">
+          {notes.map((note, index) => <li key={index}>{note}</li>)}
+        </ul>
+      )}
+      {origins.length > 0 && (
+        <details className="origins">
+          <summary>本次实际采用的输入及来源（{origins.length} 个扫描）</summary>
+          <ul>
+            {origins.map((origin) => (
+              <li key={origin.scan}>
+                #{origin.scan} [{originText(origin)}]
+                {Object.entries(origin.inputs ?? {}).filter(([, value]) => value).map(([id]) => labelOf(id)).join('、') || '无接通输入'}
+                {origin.note ? ` — ${origin.note}` : ''}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       <SegmentEditor branch={branch} runAction={runAction} />
-      {restartable.length > 0 && (
+      <ForkRow branch={branch} runAction={runAction} />
+      {restartable.length > 0 && branch.status !== 'abandoned' && (
         <div className="restart-row">
           <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
             {restartable.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
@@ -98,10 +182,15 @@ function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['r
           </button>
         </div>
       )}
-      {branch.restarts.length > 0 && (
+      {restarts.length > 0 && (
         <ul className="restart-log">
-          {branch.restarts.map((event, index) => <li key={index}><b>#{event.scan}</b>{event.message}</li>)}
+          {restarts.map((event, index) => <li key={index}><b>#{event.scan}</b>{event.message}</li>)}
         </ul>
+      )}
+      {branch.status !== 'abandoned' && (
+        <button className="abandon-btn" onClick={() => runAction(() => api.abandonBranch(branch.id))}>
+          <Ban size={14} />放弃此中间分支（记录保留）
+        </button>
       )}
     </div>
   );
@@ -110,19 +199,55 @@ function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['r
 export function BranchPanel({ state, runAction }: Props) {
   const boundaries = state.boundaries ?? [];
   const branches = state.branches ?? [];
+  const [query, setQuery] = useState({ programVersion: '', inputVersion: '', scan: '' });
+  const [found, setFound] = useState<{ branches: Branch[] } | null>(null);
+
+  const search = async () => {
+    try {
+      const result = await api.findTrials({
+        programVersion: query.programVersion ? Number(query.programVersion) : 0,
+        inputVersion: query.inputVersion ? Number(query.inputVersion) : 0,
+        scan: query.scan ? Number(query.scan) : 0,
+      });
+      setFound({ branches: result.branches ?? [] });
+    } catch (err) {
+      setFound(null);
+      // eslint-disable-next-line no-alert
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const shownBranches = found ? found.branches : branches;
+  const matchedIds = useMemo(() => new Set(found ? found.branches.map((branch) => branch.id) : []), [found]);
+
   return (
     <section className="branches">
       <h2>扫描边界与试验分支</h2>
       <button onClick={() => runAction(() => api.saveBoundary(''))}>
         <BookmarkPlus size={14} />保存当前扫描边界（#{state.scanNumber}）
       </button>
-      {boundaries.map((boundary) => (
+      <div className="trial-search">
+        <Search size={14} />
+        <input placeholder="程序版本" value={query.programVersion}
+          onChange={(event) => setQuery((current) => ({ ...current, programVersion: event.target.value }))} />
+        <input placeholder="输入版本" value={query.inputVersion}
+          onChange={(event) => setQuery((current) => ({ ...current, inputVersion: event.target.value }))} />
+        <input placeholder="扫描序号" value={query.scan}
+          onChange={(event) => setQuery((current) => ({ ...current, scan: event.target.value }))} />
+        <button onClick={search}>找回试验</button>
+        {found && <button onClick={() => setFound(null)}>清除筛选</button>}
+      </div>
+      {!found && boundaries.map((boundary) => (
         <div key={boundary.id} className="boundary-row">
           <span>{boundary.label} · 扫描 #{boundary.scan} · 版本 {boundary.version}</span>
           <button onClick={() => runAction(() => api.createBranch(boundary.id, ''))}>建立试验分支</button>
         </div>
       ))}
-      {branches.map((branch) => <BranchCard key={branch.id} branch={branch} runAction={runAction} />)}
+      {shownBranches.map((branch) => <BranchCard key={branch.id} branch={branch} runAction={runAction} />)}
+      {found && shownBranches.length === 0 && <p className="branch-meta">没有匹配该程序版本/输入版本/扫描序号的试验。</p>}
+      {found && shownBranches.length > 0 && (
+        <p className="branch-meta">共匹配 {matchedIds.size} 个试验分支（含已放弃分支），子分支结果未接回原执行。</p>
+      )}
     </section>
   );
 }

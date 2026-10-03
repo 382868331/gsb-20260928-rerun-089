@@ -1,4 +1,4 @@
-import type { ControllerState, Program, ProgramDiff } from './types';
+import type { Branch, Boundary, ControllerState, Program, ProgramDiff } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -24,6 +24,17 @@ export const api = {
   saveBoundary: (label: string) => request<ControllerState>('/api/boundaries', { method: 'POST', body: JSON.stringify({ label }) }),
   createBranch: (boundaryId: string, name: string) =>
     request<ControllerState>('/api/branches', { method: 'POST', body: JSON.stringify({ boundaryId, name }) }),
+  forkBranch: (parentId: string, forkScan: number, name: string) =>
+    request<ControllerState>(`/api/branches/${parentId}/fork`, { method: 'POST', body: JSON.stringify({ forkScan, name }) }),
+  abandonBranch: (id: string) =>
+    request<ControllerState>(`/api/branches/${id}/abandon`, { method: 'POST' }),
+  findTrials: (params: { programVersion?: number; inputVersion?: number; scan?: number }) => {
+    const query = new URLSearchParams();
+    if (params.programVersion) query.set('programVersion', String(params.programVersion));
+    if (params.inputVersion) query.set('inputVersion', String(params.inputVersion));
+    if (params.scan) query.set('scan', String(params.scan));
+    return request<{ boundaries: Boundary[]; branches: Branch[] }>(`/api/trials?${query.toString()}`);
+  },
   replaceSegment: (id: string, fromScan: number, inputs: Array<Record<string, boolean>>) =>
     request<ControllerState>(`/api/branches/${id}/segment`, { method: 'PUT', body: JSON.stringify({ fromScan, inputs }) }),
   restartElement: (id: string, nodeId: string) =>

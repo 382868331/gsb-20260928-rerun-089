@@ -44,6 +44,9 @@ func main() {
 	mux.HandleFunc("POST /api/program/preview", server.handleProgramPreview)
 	mux.HandleFunc("POST /api/boundaries", server.handleBoundary)
 	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
+	mux.HandleFunc("POST /api/branches/{id}/fork", server.handleBranchFork)
+	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
+	mux.HandleFunc("GET /api/trials", server.handleTrials)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
 	staticFiles, err := fs.Sub(frontendAssets, "frontend/dist")
@@ -273,7 +276,8 @@ func (s *Server) handleBranchCreate(writer http.ResponseWriter, request *http.Re
 	s.mu.Lock()
 	if _, err := s.branches.CreateBranch(req.BoundaryID, req.Name); err != nil {
 		s.mu.Unlock()
-		http.Error(writer, err.Error(), http.StatusNotFound)
+		// 创建失败不改变任何运行状态，已有边界、分支与暂停程序全部保留。
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	state := s.controller.State()
@@ -281,6 +285,74 @@ func (s *Server) handleBranchCreate(writer http.ResponseWriter, request *http.Re
 	s.persist()
 	s.mu.Unlock()
 	writeJSON(writer, http.StatusOK, state)
+}
+
+type branchForkRequest struct {
+	Name     string `json:"name"`
+	ForkScan int    `json:"forkScan"`
+}
+
+func (s *Server) handleBranchFork(writer http.ResponseWriter, request *http.Request) {
+	var req branchForkRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ForkScan == 0 {
+		http.Error(writer, "forkScan 必须指定父分支上已模拟的扫描序号", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if _, err := s.branches.ForkBranch(request.PathValue("id"), req.Name, req.ForkScan); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleBranchAbandon(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	if _, err := s.branches.AbandonBranch(request.PathValue("id")); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+// handleTrials 支持按程序修订版本、输入版本与扫描序号找回历史试验。
+func (s *Server) handleTrials(writer http.ResponseWriter, request *http.Request) {
+	query := request.URL.Query()
+	programVersion := atoiOrZero(query.Get("programVersion"))
+	inputVersion := atoiOrZero(query.Get("inputVersion"))
+	scan := atoiOrZero(query.Get("scan"))
+	s.mu.Lock()
+	boundaries, branches := s.branches.FindTrials(programVersion, inputVersion, scan)
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, map[string]any{"boundaries": boundaries, "branches": branches})
+}
+
+func atoiOrZero(value string) int {
+	if value == "" {
+		return 0
+	}
+	result := 0
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return 0
+		}
+		result = result*10 + int(char-'0')
+	}
+	return result
 }
 
 type branchSegmentRequest struct {

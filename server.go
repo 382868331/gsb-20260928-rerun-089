@@ -46,6 +46,7 @@ func main() {
 	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
 	mux.HandleFunc("POST /api/branches/{id}/fork", server.handleBranchFork)
 	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
+	mux.HandleFunc("POST /api/branches/{id}/rebase", server.handleBranchRebase)
 	mux.HandleFunc("GET /api/trials", server.handleTrials)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
@@ -304,6 +305,20 @@ func (s *Server) handleBranchFork(writer http.ResponseWriter, request *http.Requ
 	}
 	s.mu.Lock()
 	if _, err := s.branches.ForkBranch(request.PathValue("id"), req.Name, req.ForkScan); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+func (s *Server) handleBranchRebase(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	if _, err := s.branches.RebaseComparison(request.PathValue("id")); err != nil {
 		s.mu.Unlock()
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return

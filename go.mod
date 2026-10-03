@@ -1,4 +1,4 @@
 module virtual-controller
 
-go 1.27
+go 1.26
 

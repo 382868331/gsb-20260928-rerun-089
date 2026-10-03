@@ -104,6 +104,14 @@ type Branch struct {
 	Restarts     []ScanEvent           `json:"restarts"`
 	OverlapNotes []string              `json:"overlapNotes"`
 	Divergence   *Divergence           `json:"divergence,omitempty"`
+	// Baseline 是子分支冻结的对照快照（父分支在派生或显式重建对照时
+	// 的记录）：父分支之后替换输入不会悄悄改变已有子分支的比较依据。
+	Baseline             []ScanRecord `json:"baseline"`
+	BaselineInputVersion int          `json:"baselineInputVersion,omitempty"`
+	CompareVersion       int          `json:"compareVersion"`
+	Comparison           *Comparison  `json:"comparison,omitempty"`
+	// Reports 保存被新对照版本替换下来的旧对照报告，只读保留。
+	Reports []Comparison `json:"reports"`
 }
 
 // RowOrigin 说明分支中某一扫描实际采用的输入来自哪里：
@@ -127,6 +135,31 @@ type Divergence struct {
 	InternalState map[string]bool       `json:"internalState"`
 	TimerState    map[string]TimerState `json:"timerState"`
 	Message       string                `json:"message"`
+}
+
+// 比较状态：已比较且确实一致、已比较且存在差异、没有可比较的对照记录。
+const (
+	CompareStatusDiverged   = "diverged"
+	CompareStatusConsistent = "consistent"
+	CompareStatusMissing    = "missing"
+)
+
+// Comparison 是一次完整的对照结论：固定采用的程序修订、输入版本与
+// 扫描范围，明确区分确实一致、存在真实差异和没有比较对象。
+// 候选输入或缺失记录不会被当作已执行扫描而误判为一致。
+type Comparison struct {
+	CompareVersion     int         `json:"compareVersion"`
+	Status             string      `json:"status"`
+	CompareTarget      string      `json:"compareTarget"`
+	ProgramVersion     int         `json:"programVersion"`
+	InputVersion       int         `json:"inputVersion"`
+	ParentInputVersion int         `json:"parentInputVersion,omitempty"`
+	FromScan           int         `json:"fromScan"`
+	ToScan             int         `json:"toScan"`
+	ComparedScans      int         `json:"comparedScans"`
+	MissingScans       []int       `json:"missingScans"`
+	Divergence         *Divergence `json:"divergence,omitempty"`
+	Message            string      `json:"message"`
 }
 
 type ScanEvent struct {

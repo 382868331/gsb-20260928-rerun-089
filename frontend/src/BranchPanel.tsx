@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search } from 'lucide-react';
 import { api } from './api';
-import type { Branch, ControllerState, RowOrigin } from './types';
+import type { Branch, Comparison, ControllerState, RowOrigin } from './types';
 
 const SEGMENT_ROWS = 3;
 
@@ -110,7 +110,40 @@ function ForkRow({ branch, runAction }: { branch: Branch; runAction: Props['runA
   );
 }
 
-function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['runAction'] }) {
+function ComparisonPanel({ comparison, labelOf }: { comparison: Comparison; labelOf: (id: string) => string }) {
+  const divergence = comparison.divergence;
+  return (
+    <div className={`comparison-panel ${comparison.status}`}>
+      <p className={comparison.status === 'diverged' ? 'divergence' : 'branch-meta'}>
+        {comparison.status === 'diverged' && '已比较：存在真实差异。'}
+        {comparison.status === 'consistent' && '已比较：确实一致。'}
+        {comparison.status === 'missing' && '没有比较对象。'}
+        {comparison.message}
+      </p>
+      <p className="branch-meta">
+        对照依据：程序修订 v{comparison.programVersion} · 本分支输入版本 #{comparison.inputVersion}
+        {comparison.parentInputVersion ? ` · 父分支输入版本 #${comparison.parentInputVersion}` : ''}
+        {' · '}对照版本 #{comparison.compareVersion} · 扫描范围 #{comparison.fromScan}-#{comparison.toScan}
+        {' · '}已比较 {comparison.comparedScans} 个扫描
+        {comparison.missingScans.length > 0 ? ` · 缺失对照：${comparison.missingScans.map((s) => `#${s}`).join(', ')}` : ''}
+      </p>
+      {divergence && (
+        <>
+          <p className="branch-meta">
+            差异输出：{divergence.outputs.map(labelOf).join('、') || '无'}；
+            涉及内部状态：{divergence.internals.map(labelOf).join('、') || '无'}
+          </p>
+          <p className="branch-meta">
+            当时内部状态：{Object.entries(divergence.internalState ?? {}).map(([id, value]) => `${labelOf(id)}=${value ? '1' : '0'}`).join('，') || '无'}；
+            定时累计：{Object.entries(divergence.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无'}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Branch; runAction: Props['runAction'] }) {
   const restartable = branch.program.nodes.filter((node) => node.kind === 'TON' || node.kind === 'SR');
   const [nodeId, setNodeId] = useState(restartable[0]?.id ?? '');
   const labelOf = (id: string) => branch.program.nodes.find((node) => node.id === id)?.label ?? id;
@@ -136,20 +169,38 @@ function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['r
       {branch.status === 'created' && origins.length > 0 && (
         <p className="branch-meta">已继承父分支候选输入，可直接比较或继续替换。</p>
       )}
-      {branch.divergence ? (
-        <>
-          <p className="divergence">{branch.divergence.message}</p>
-          <p className="branch-meta">
-            差异输出：{branch.divergence.outputs.map(labelOf).join('、') || '无'}；
-            涉及内部状态：{branch.divergence.internals.map(labelOf).join('、') || '无'}
-          </p>
-          <p className="branch-meta">
-            当时内部状态：{Object.entries(branch.divergence.internalState ?? {}).map(([id, value]) => `${labelOf(id)}=${value ? '1' : '0'}`).join('，') || '无'}；
-            定时累计：{Object.entries(branch.divergence.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无'}
-          </p>
-        </>
-      ) : (
-        branch.status === 'applied' && <p className="branch-meta">与{branch.parentId ? '父分支' : '原执行'}输出一致（已比较 {records.length} 个扫描）</p>
+      {branch.comparison && <ComparisonPanel comparison={branch.comparison} labelOf={labelOf} />}
+      {branch.parentId && branch.status !== 'abandoned' && (
+        <div className="rebase-row">
+          {parent && parent.inputVersion !== (branch.comparison?.parentInputVersion ?? 0) && (
+            <p className="branch-meta">
+              父分支已更新到输入版本 #{parent.inputVersion}，本分支对照仍冻结在
+              #{branch.comparison?.parentInputVersion ?? 0}，可显式建立新的对照版本。
+            </p>
+          )}
+          <button onClick={() => runAction(() => api.rebaseComparison(branch.id))}>
+            <GitBranch size={14} />按父分支当前记录建立新的对照版本（旧报告保留）
+          </button>
+        </div>
+      )}
+      {(branch.reports ?? []).length > 0 && (
+        <details className="origins">
+          <summary>历史对照报告（{(branch.reports ?? []).length}）</summary>
+          <ul>
+            {(branch.reports ?? []).map((report) => (
+              <li key={report.compareVersion}>
+                对照版本 #{report.compareVersion} · 输入版本 #{report.inputVersion}
+                {report.parentInputVersion ? ` · 父分支输入版本 #${report.parentInputVersion}` : ''}
+                {' · '}
+                {report.status === 'diverged'
+                  ? `首次差异 @ 扫描 #${report.divergence?.scan}`
+                  : report.status === 'consistent'
+                    ? '确实一致'
+                    : '没有比较对象'}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {notes.length > 0 && (
         <ul className="overlap-notes">
@@ -243,7 +294,10 @@ export function BranchPanel({ state, runAction }: Props) {
           <button onClick={() => runAction(() => api.createBranch(boundary.id, ''))}>建立试验分支</button>
         </div>
       ))}
-      {shownBranches.map((branch) => <BranchCard key={branch.id} branch={branch} runAction={runAction} />)}
+      {shownBranches.map((branch) => (
+        <BranchCard key={branch.id} branch={branch}
+          parent={branches.find((item) => item.id === branch.parentId)} runAction={runAction} />
+      ))}
       {found && shownBranches.length === 0 && <p className="branch-meta">没有匹配该程序版本/输入版本/扫描序号的试验。</p>}
       {found && shownBranches.length > 0 && (
         <p className="branch-meta">共匹配 {matchedIds.size} 个试验分支（含已放弃分支），子分支结果未接回原执行。</p>
@@ -251,4 +305,3 @@ export function BranchPanel({ state, runAction }: Props) {
     </section>
   );
 }
-

@@ -137,6 +137,12 @@ em { font-style: normal; font-size: 12px; color: #64748b; }
   color: #92400e;
   font-size: 12px;
 }
+.comparison-panel { margin: 6px 0; padding: 8px; border-radius: 8px; font-size: 12px; }
+.comparison-panel.diverged { border: 1px solid #fbbf24; background: #fffbeb; }
+.comparison-panel.consistent { border: 1px solid #34d399; background: #ecfdf5; }
+.comparison-panel.missing { border: 1px solid #94a3b8; background: #f8fafc; }
+.comparison-panel .divergence { margin: 0 0 4px; padding: 0; border: none; background: none; }
+.rebase-row { margin: 6px 0; display: grid; gap: 4px; justify-items: start; }
 .segment-editor { margin-top: 8px; display: grid; gap: 8px; }
 .segment-editor label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 .segment-editor input[type='number'] { width: 80px; }

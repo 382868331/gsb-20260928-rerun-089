@@ -28,6 +28,8 @@ export const api = {
     request<ControllerState>(`/api/branches/${parentId}/fork`, { method: 'POST', body: JSON.stringify({ forkScan, name }) }),
   abandonBranch: (id: string) =>
     request<ControllerState>(`/api/branches/${id}/abandon`, { method: 'POST' }),
+  rebaseComparison: (id: string) =>
+    request<ControllerState>(`/api/branches/${id}/rebase`, { method: 'POST' }),
   findTrials: (params: { programVersion?: number; inputVersion?: number; scan?: number }) => {
     const query = new URLSearchParams();
     if (params.programVersion) query.set('programVersion', String(params.programVersion));

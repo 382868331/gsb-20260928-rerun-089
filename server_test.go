@@ -27,6 +27,9 @@ func newBranchTestServer(t *testing.T) (*Server, *http.ServeMux) {
 	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
+	mux.HandleFunc("POST /api/branches/{id}/fork", server.handleBranchFork)
+	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
+	mux.HandleFunc("POST /api/branches/{id}/rebase", server.handleBranchRebase)
 	return server, mux
 }
 
@@ -102,6 +105,81 @@ func TestBranchAPIEndToEnd(t *testing.T) {
 	}
 	if len(restored[0].Segment) != 1 || !restored[0].Segment[0]["stop"] {
 		t.Fatal("重开后分支替换输入段必须一致")
+	}
+}
+
+// 页面级语义：未来扫描不是已比较一致；中间层可放弃且后代继续工作；
+// 父分支替换后子分支对照冻结，显式重建才更新。
+func TestBranchAPIComparisonSemantics(t *testing.T) {
+	_, mux := newBranchTestServer(t)
+
+	callAPI(t, mux, http.MethodPut, "/api/inputs/start", inputRequest{Value: true})
+	callAPI(t, mux, http.MethodPost, "/api/scans", scanRequest{Count: 1})
+	callAPI(t, mux, http.MethodPut, "/api/inputs/start", inputRequest{Value: false})
+	callAPI(t, mux, http.MethodPost, "/api/scans", scanRequest{Count: 3})
+	_, state := callAPI(t, mux, http.MethodPost, "/api/boundaries", boundaryRequest{Label: "b"})
+	boundary := state.Boundaries[0]
+
+	_, state = callAPI(t, mux, http.MethodPost, "/api/branches", branchCreateRequest{BoundaryID: boundary.ID, Name: "父"})
+	parent := state.Branches[0]
+	// 分支模拟了原执行没有的未来扫描：必须是没有比较对象，而不是一致。
+	_, state = callAPI(t, mux, http.MethodPut, "/api/branches/"+parent.ID+"/segment",
+		branchSegmentRequest{FromScan: parent.BaseScan + 1, Inputs: []map[string]bool{{}, {}, {}}})
+	comparison := state.Branches[0].Comparison
+	if comparison == nil || comparison.Status != CompareStatusMissing {
+		t.Fatalf("未来扫描必须是没有比较对象: %+v", comparison)
+	}
+
+	// 原执行补两个扫描后，分支变为部分可比较。
+	callAPI(t, mux, http.MethodPost, "/api/scans", scanRequest{Count: 2})
+	_, state = callAPI(t, mux, http.MethodPut, "/api/branches/"+parent.ID+"/segment",
+		branchSegmentRequest{FromScan: parent.BaseScan + 1, Inputs: []map[string]bool{{}, {}, {}}})
+	comparison = state.Branches[0].Comparison
+	if comparison == nil || comparison.Status != CompareStatusConsistent || len(comparison.MissingScans) != 1 {
+		t.Fatalf("部分可比较时应为确实一致并标出缺失扫描: %+v", comparison)
+	}
+
+	// 派生子分支后父分支替换输入：子分支对照冻结，显式重建才更新。
+	_, state = callAPI(t, mux, http.MethodPost, "/api/branches/"+parent.ID+"/fork",
+		branchForkRequest{Name: "子", ForkScan: parent.BaseScan + 2})
+	child := state.Branches[1]
+	_, state = callAPI(t, mux, http.MethodPut, "/api/branches/"+parent.ID+"/segment",
+		branchSegmentRequest{FromScan: parent.BaseScan + 2, Inputs: []map[string]bool{{"stop": true}, {}}})
+	for _, branch := range state.Branches {
+		if branch.ID == child.ID {
+			child = branch
+		}
+	}
+	if child.Comparison == nil || child.Comparison.ParentInputVersion != 2 {
+		t.Fatalf("父分支替换后子分支对照必须冻结在派生时的输入版本: %+v", child.Comparison)
+	}
+	code, state := callAPI(t, mux, http.MethodPost, "/api/branches/"+child.ID+"/rebase", nil)
+	if code != http.StatusOK {
+		t.Fatalf("显式重建对照失败: %d", code)
+	}
+	for _, branch := range state.Branches {
+		if branch.ID == child.ID {
+			child = branch
+		}
+	}
+	if child.CompareVersion != 2 || len(child.Reports) != 1 || child.Comparison.ParentInputVersion != 3 {
+		t.Fatalf("重建后应固定新输入版本并保留旧报告: %+v", child.Comparison)
+	}
+
+	// 中间层可放弃：转为只读保留，子分支记录仍在。
+	code, state = callAPI(t, mux, http.MethodPost, "/api/branches/"+parent.ID+"/abandon", nil)
+	if code != http.StatusOK {
+		t.Fatalf("有子分支的中间层应可放弃: %d", code)
+	}
+	for _, branch := range state.Branches {
+		if branch.ID == parent.ID && branch.Status != branchStatusAbandoned {
+			t.Fatal("放弃后中间层必须为只读保留状态")
+		}
+	}
+	code, _ = callAPI(t, mux, http.MethodPut, "/api/branches/"+parent.ID+"/segment",
+		branchSegmentRequest{FromScan: parent.BaseScan + 1, Inputs: []map[string]bool{{}}})
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("放弃后的中间层不能再编辑，得到 %d", code)
 	}
 }
 

@@ -131,3 +131,51 @@ export interface Branch {
   comparison?: Comparison | null;
   reports: Comparison[];
 }
+
+export interface ScanInterval {
+  fromScan: number;
+  toScan: number;
+}
+
+export interface ReviewScan {
+  scan: number;
+  status: 'compared' | 'missing';
+  candidate: ScanRecord;
+  baseline?: ScanRecord | null;
+  outputDifferences: string[];
+  internalDifferences: string[];
+  firstOutputDifference: boolean;
+  timerState: Record<string, { elapsedMs: number; q: boolean }>;
+}
+
+export interface ReviewNote {
+  id: string;
+  compareVersion: number;
+  scan?: number;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewPackage {
+  kind: string;
+  formatVersion: number;
+  id: string;
+  originalId?: string;
+  branchId: string;
+  branchName: string;
+  branchStatus: BranchStatus;
+  parentId?: string;
+  parentName?: string;
+  baseScan: number;
+  forkScan?: number;
+  programVersion: number;
+  inputVersion: number;
+  program: Program;
+  exportedAt: string;
+  currentReport: Comparison;
+  historicalReports: Comparison[];
+  comparedScans: ReviewScan[];
+  missingIntervals: ScanInterval[];
+  notes: ReviewNote[];
+}

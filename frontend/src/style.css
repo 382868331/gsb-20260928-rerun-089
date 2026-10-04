@@ -255,6 +255,43 @@ em { font-style: normal; font-size: 12px; color: #64748b; }
 .status-badge.applied { background: #dcf3e6; color: #1c6b3a; }
 .status-badge.abandoned { background: #eee; color: #777; }
 .branch-card.abandoned { opacity: 0.65; }
+.review-packages { margin-bottom: 12px; }
+.review-package {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 12px;
+}
+.review-package summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 700; }
+.review-controls { display: flex; gap: 6px; align-items: end; flex-wrap: wrap; margin: 8px 0; }
+.review-controls label { display: grid; gap: 3px; font-size: 12px; }
+.review-controls input, .review-controls select { padding: 6px; border: 1px solid #cbd5e1; border-radius: 8px; }
+.review-controls input { width: 90px; }
+.review-scan { padding: 8px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; }
+.review-package textarea {
+  width: 100%;
+  min-height: 58px;
+  margin: 8px 0 6px;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  resize: vertical;
+}
+.review-notes { margin: 8px 0 0; padding-left: 18px; color: #334155; }
+.import-review {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+.import-review input { display: none; }
 .fork-row, .trial-search {
   display: flex;
   gap: 6px;

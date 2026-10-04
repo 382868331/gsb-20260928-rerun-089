@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
-import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search } from 'lucide-react';
+import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search, FileArchive } from 'lucide-react';
 import { api } from './api';
+import { ReviewPanel, downloadReviewPackage } from './ReviewPackages';
 import type { Branch, Comparison, ControllerState, RowOrigin } from './types';
 
 const SEGMENT_ROWS = 3;
 
 type Props = {
   state: ControllerState;
-  runAction: (action: () => Promise<ControllerState>) => void;
+  runAction: <T>(action: () => Promise<T>) => Promise<T | false>;
 };
 
 function StatusBadge({ branch }: { branch: Branch }) {
@@ -170,6 +171,17 @@ function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Br
         <p className="branch-meta">已继承父分支候选输入，可直接比较或继续替换。</p>
       )}
       {branch.comparison && <ComparisonPanel comparison={branch.comparison} labelOf={labelOf} />}
+      {branch.comparison && (
+        <button onClick={async () => {
+          const exported = await runAction(() => api.exportReviewPackage(branch.id));
+          if (exported) {
+            downloadReviewPackage(exported);
+            window.dispatchEvent(new CustomEvent('review-packages-changed'));
+          }
+        }}>
+          <FileArchive size={14} />导出审阅包（当前报告 + 历史版本）
+        </button>
+      )}
       {branch.parentId && branch.status !== 'abandoned' && (
         <div className="rebase-row">
           {parent && parent.inputVersion !== (branch.comparison?.parentInputVersion ?? 0) && (
@@ -274,6 +286,7 @@ export function BranchPanel({ state, runAction }: Props) {
   return (
     <section className="branches">
       <h2>扫描边界与试验分支</h2>
+      <ReviewPanel runAction={runAction} />
       <button onClick={() => runAction(() => api.saveBoundary(''))}>
         <BookmarkPlus size={14} />保存当前扫描边界（#{state.scanNumber}）
       </button>

@@ -47,6 +47,11 @@ func main() {
 	mux.HandleFunc("POST /api/branches/{id}/fork", server.handleBranchFork)
 	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
 	mux.HandleFunc("POST /api/branches/{id}/rebase", server.handleBranchRebase)
+	mux.HandleFunc("POST /api/branches/{id}/review-package", server.handleReviewExport)
+	mux.HandleFunc("GET /api/reviews", server.handleReviews)
+	mux.HandleFunc("GET /api/reviews/{id}", server.handleReviewGet)
+	mux.HandleFunc("POST /api/reviews/import", server.handleReviewImport)
+	mux.HandleFunc("POST /api/reviews/{id}/notes", server.handleReviewNote)
 	mux.HandleFunc("GET /api/trials", server.handleTrials)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
@@ -354,6 +359,80 @@ func (s *Server) handleTrials(writer http.ResponseWriter, request *http.Request)
 	boundaries, branches := s.branches.FindTrials(programVersion, inputVersion, scan)
 	s.mu.Unlock()
 	writeJSON(writer, http.StatusOK, map[string]any{"boundaries": boundaries, "branches": branches})
+}
+
+func (s *Server) handleReviewExport(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	pkg, err := s.branches.ExportReviewPackage(request.PathValue("id"))
+	if err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	s.persist()
+	s.mu.Unlock()
+	writer.Header().Set("Content-Disposition", `attachment; filename="review-package.json"`)
+	writeJSON(writer, http.StatusOK, pkg)
+}
+
+func (s *Server) handleReviews(writer http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	reviews := s.branches.ReviewPackages()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, map[string]any{"reviews": reviews})
+}
+
+func (s *Server) handleReviewGet(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	pkg := s.branches.findReview(request.PathValue("id"))
+	s.mu.Unlock()
+	if pkg == nil {
+		http.Error(writer, "审阅包不存在", http.StatusNotFound)
+		return
+	}
+	writeJSON(writer, http.StatusOK, pkg)
+}
+
+func (s *Server) handleReviewImport(writer http.ResponseWriter, request *http.Request) {
+	var pkg ReviewPackage
+	if err := json.NewDecoder(request.Body).Decode(&pkg); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	imported, err := s.branches.ImportReviewPackage(pkg)
+	if err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, imported)
+}
+
+type reviewNoteRequest struct {
+	CompareVersion int    `json:"compareVersion"`
+	Scan           int    `json:"scan"`
+	Text           string `json:"text"`
+}
+
+func (s *Server) handleReviewNote(writer http.ResponseWriter, request *http.Request) {
+	var req reviewNoteRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	pkg, err := s.branches.AddReviewNote(request.PathValue("id"), req.CompareVersion, req.Scan, req.Text)
+	if err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, pkg)
 }
 
 func atoiOrZero(value string) int {

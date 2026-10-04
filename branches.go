@@ -15,6 +15,7 @@ type BranchManager struct {
 	controller *Controller
 	boundaries []Boundary
 	branches   []*Branch
+	reviews    []*ReviewPackage
 	nextID     int
 }
 
@@ -747,14 +748,18 @@ func (b Branch) MarshalJSON() ([]byte, error) {
 }
 
 type branchStore struct {
-	NextID     int        `json:"nextId"`
-	Boundaries []Boundary `json:"boundaries"`
-	Branches   []*Branch  `json:"branches"`
+	NextID     int              `json:"nextId"`
+	Boundaries []Boundary       `json:"boundaries"`
+	Branches   []*Branch        `json:"branches"`
+	Reviews    []*ReviewPackage `json:"reviews"`
 }
 
 // Save 把边界与分支（含替换输入段、程序版本、扫描序号）持久化到磁盘。
 func (m *BranchManager) Save(path string) error {
-	store := branchStore{NextID: m.nextID, Boundaries: m.boundaries, Branches: m.branches}
+	store := branchStore{NextID: m.nextID, Boundaries: m.boundaries, Branches: m.branches, Reviews: m.reviews}
+	for _, review := range m.reviews {
+		normalizeReviewPackage(review)
+	}
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
 		return err
@@ -778,6 +783,7 @@ func (m *BranchManager) Load(path string) error {
 	m.nextID = store.NextID
 	m.boundaries = store.Boundaries
 	m.branches = store.Branches
+	m.reviews = store.Reviews
 	if m.nextID < 1 {
 		m.nextID = 1
 	}
@@ -835,6 +841,9 @@ func (m *BranchManager) Load(path string) error {
 				branch.Reports[i].MissingScans = []int{}
 			}
 		}
+	}
+	for _, review := range m.reviews {
+		normalizeReviewPackage(review)
 	}
 	return nil
 }

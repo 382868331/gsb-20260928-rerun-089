@@ -145,16 +145,20 @@ export function AppInner() {
 
   // runAction 返回是否成功：只有成功才允许调用方清理编辑/预览状态，
   // 失败时保留原暂停程序与本地编辑，不能让画布误以为新版本已生效。
-  const runAction = async (action: () => Promise<ControllerState>): Promise<boolean> => {
-    try {
-      setState(await action());
-      setError('');
-      return true;
+  const runAction = async <T,>(action: () => Promise<T>): Promise<T | false> => {
+	try {
+	  const result = await action();
+	  if (isControllerState(result)) setState(result);
+	  setError('');
+	  return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return false;
     }
   };
+
+  const isControllerState = (value: unknown): value is ControllerState =>
+    typeof value === 'object' && value !== null && 'program' in value && 'scanNumber' in value;
 
   const markDirty = () => setDirty(true);
 

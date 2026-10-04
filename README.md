@@ -44,6 +44,8 @@ go run .
 - `GET /api/trials?programVersion=&inputVersion=&scan=` 可沿程序修订版本、输入版本与扫描序号找回各次试验（含已放弃分支）。
 - 新建分支的 `segment`/`records`/`origins`/`restarts`/`overlapNotes` 始终序列化为空数组而不是 `null`，前端另设错误边界，保存边界后建立分支不再因读取空值长度白屏。
 - 定时器跨分支起点时以边界累计为依据继续计时；`POST /api/branches/{id}/restart` 让用户在分支起点明确重新开始某个元件（定时累计或保持值清零），并留下永久记录。
+- `POST /api/branches/{id}/review-package` 导出自包含审阅包：冻结当前报告、历史对照版本、实际比较/缺失扫描列表、缺失区间、首次输出差异时的内部状态与定时器状态，以及程序快照。
+- `POST /api/reviews/import` 可在没有对应活动分支或父分支已更新、中间层已放弃时重新打开审阅包；`POST /api/reviews/{id}/notes` 针对包内某个报告版本和可选扫描序号记录审阅说明，说明随审阅包持久化。
 - 边界与分支持久化在 `branch_store.json`，保存重开后各分支的替换输入段、程序版本与扫描序号保持一致。
 
 ## 验证

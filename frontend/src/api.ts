@@ -1,4 +1,4 @@
-import type { Branch, Boundary, ControllerState, Program, ProgramDiff } from './types';
+import type { Branch, Boundary, ControllerState, Program, ProgramDiff, ReviewPackage } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -41,4 +41,14 @@ export const api = {
     request<ControllerState>(`/api/branches/${id}/segment`, { method: 'PUT', body: JSON.stringify({ fromScan, inputs }) }),
   restartElement: (id: string, nodeId: string) =>
     request<ControllerState>(`/api/branches/${id}/restart`, { method: 'POST', body: JSON.stringify({ nodeId }) }),
+  exportReviewPackage: (id: string) => request<ReviewPackage>(`/api/branches/${id}/review-package`, { method: 'POST' }),
+  reviewPackages: () => request<{ reviews: ReviewPackage[] }>('/api/reviews'),
+  reviewPackage: (id: string) => request<ReviewPackage>(`/api/reviews/${id}`),
+  importReviewPackage: (pkg: ReviewPackage) =>
+    request<ReviewPackage>('/api/reviews/import', { method: 'POST', body: JSON.stringify(pkg) }),
+  addReviewNote: (id: string, compareVersion: number, scan: number, text: string) =>
+    request<ReviewPackage>(`/api/reviews/${id}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ compareVersion, scan, text }),
+    }),
 };

@@ -48,6 +48,8 @@ func main() {
 	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
 	mux.HandleFunc("POST /api/branches/{id}/rebase", server.handleBranchRebase)
 	mux.HandleFunc("GET /api/trials", server.handleTrials)
+	mux.HandleFunc("GET /api/branches/{id}/review-package", server.handleReviewPackage)
+	mux.HandleFunc("POST /api/branches/{id}/review-notes", server.handleReviewNote)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
 	staticFiles, err := fs.Sub(frontendAssets, "frontend/dist")
@@ -368,6 +370,46 @@ func atoiOrZero(value string) int {
 		result = result*10 + int(char-'0')
 	}
 	return result
+}
+
+func (s *Server) handleReviewPackage(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	pkg, err := s.branches.ExportReviewPackage(request.PathValue("id"))
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writer.Header().Set("Content-Disposition", `attachment; filename="branch-review-package.json"`)
+	writeJSON(writer, http.StatusOK, pkg)
+}
+
+type reviewNoteRequest struct {
+	CompareVersion int    `json:"compareVersion"`
+	Text           string `json:"text"`
+}
+
+func (s *Server) handleReviewNote(writer http.ResponseWriter, request *http.Request) {
+	var req reviewNoteRequest
+	if err := json.NewDecoder(request.Body).Decode(&req); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.CompareVersion < 1 {
+		http.Error(writer, "compareVersion 必须大于 0", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if _, err := s.branches.AddReviewNote(request.PathValue("id"), req.CompareVersion, req.Text); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
 }
 
 type branchSegmentRequest struct {

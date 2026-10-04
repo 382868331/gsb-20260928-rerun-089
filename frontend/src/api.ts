@@ -1,4 +1,4 @@
-import type { Branch, Boundary, ControllerState, Program, ProgramDiff } from './types';
+import type { Branch, Boundary, ControllerState, Program, ProgramDiff, ReviewPackage } from './types';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -30,6 +30,19 @@ export const api = {
     request<ControllerState>(`/api/branches/${id}/abandon`, { method: 'POST' }),
   rebaseComparison: (id: string) =>
     request<ControllerState>(`/api/branches/${id}/rebase`, { method: 'POST' }),
+  reviewPackageURL: (id: string) => `/api/branches/${id}/review-package`,
+  addReviewNote: (id: string, compareVersion: number, text: string) =>
+    request<ControllerState>(`/api/branches/${id}/review-notes`, {
+      method: 'POST',
+      body: JSON.stringify({ compareVersion, text }),
+    }),
+  openReviewPackage: async (file: File): Promise<ReviewPackage> => {
+    const parsed = JSON.parse(await file.text()) as ReviewPackage;
+    if (parsed.kind !== 'branch-review-package' || !parsed.branch || !parsed.currentReport) {
+      throw new Error('文件不是有效的分支审阅包');
+    }
+    return parsed;
+  },
   findTrials: (params: { programVersion?: number; inputVersion?: number; scan?: number }) => {
     const query = new URLSearchParams();
     if (params.programVersion) query.set('programVersion', String(params.programVersion));

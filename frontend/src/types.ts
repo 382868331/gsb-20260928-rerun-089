@@ -87,9 +87,13 @@ export interface Comparison {
   fromScan: number;
   toScan: number;
   comparedScans: number;
+  comparedScanNumbers: number[];
   missingScans: number[];
+  missingRanges: Array<{ from: number; to: number }>;
   divergence?: Divergence | null;
   message: string;
+  candidateRecords?: ScanRecord[];
+  baselineRecords?: ScanRecord[];
 }
 
 export type RowSource = 'original' | 'parent' | 'self';
@@ -130,4 +134,22 @@ export interface Branch {
   compareVersion: number;
   comparison?: Comparison | null;
   reports: Comparison[];
+  reviewNotes: ReviewNote[];
+}
+
+export interface ReviewNote {
+  compareVersion: number;
+  createdAt: string;
+  text: string;
+}
+
+export interface ReviewPackage {
+  kind: 'branch-review-package';
+  formatVersion: string;
+  exportedAt: string;
+  branch: Branch;
+  boundary?: Boundary;
+  currentReport: Comparison;
+  reports: Comparison[];
+  reviewNotes: ReviewNote[];
 }

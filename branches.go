@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // BranchManager 管理扫描边界与输入试验分支。边界是只读快照，
@@ -84,6 +85,7 @@ func (m *BranchManager) CreateBranch(boundaryID, name string) (*Branch, error) {
 		OverlapNotes:   []string{},
 		Baseline:       []ScanRecord{},
 		Reports:        []Comparison{},
+		ReviewNotes:    []ReviewNote{},
 		CompareVersion: 1,
 	}
 	m.branches = append(m.branches, branch)
@@ -147,6 +149,7 @@ func (m *BranchManager) ForkBranch(parentID, name string, forkScan int) (*Branch
 		OverlapNotes:   []string{},
 		Baseline:       []ScanRecord{},
 		Reports:        []Comparison{},
+		ReviewNotes:    []ReviewNote{},
 		CompareVersion: 1,
 	}
 	// 延续父分支派生点之后已经模拟出的候选输入段，来源标注为父分支模拟。
@@ -396,12 +399,16 @@ func (m *BranchManager) compare(branch *Branch) *Comparison {
 		baselineName = "原执行"
 	}
 	comparison := &Comparison{
-		CompareVersion:     branch.CompareVersion,
-		CompareTarget:      baselineName,
-		ProgramVersion:     branch.BaseVersion,
-		InputVersion:       branch.InputVersion,
-		ParentInputVersion: parentInputVersion,
-		MissingScans:       []int{},
+		CompareVersion:      branch.CompareVersion,
+		CompareTarget:       baselineName,
+		ProgramVersion:      branch.BaseVersion,
+		InputVersion:        branch.InputVersion,
+		ParentInputVersion:  parentInputVersion,
+		MissingScans:        []int{},
+		MissingRanges:       []ScanRange{},
+		ComparedScanNumbers: []int{},
+		CandidateRecords:    cloneRecords(branch.Records),
+		BaselineRecords:     cloneRecords(baseline),
 	}
 	if len(branch.Records) > 0 {
 		comparison.FromScan = branch.Records[0].Scan
@@ -415,6 +422,7 @@ func (m *BranchManager) compare(branch *Branch) *Comparison {
 			continue
 		}
 		comparison.ComparedScans++
+		comparison.ComparedScanNumbers = append(comparison.ComparedScanNumbers, record.Scan)
 		if comparison.Divergence != nil {
 			continue
 		}
@@ -434,6 +442,7 @@ func (m *BranchManager) compare(branch *Branch) *Comparison {
 				baselineName, record.Scan, joinOrNone(outputs), formatState(record.Internals), formatTimers(record.Timers)),
 		}
 	}
+	comparison.MissingRanges = rangesFromScans(comparison.MissingScans)
 	switch {
 	case comparison.Divergence != nil:
 		comparison.Status = CompareStatusDiverged
@@ -452,6 +461,105 @@ func (m *BranchManager) compare(branch *Branch) *Comparison {
 		}
 	}
 	return comparison
+}
+
+func rangesFromScans(scans []int) []ScanRange {
+	if len(scans) == 0 {
+		return []ScanRange{}
+	}
+	sortedScans := append([]int{}, scans...)
+	sort.Ints(sortedScans)
+	ranges := []ScanRange{}
+	start := sortedScans[0]
+	end := start
+	for _, scan := range sortedScans[1:] {
+		if scan == end+1 {
+			end = scan
+			continue
+		}
+		ranges = append(ranges, ScanRange{From: start, To: end})
+		start, end = scan, scan
+	}
+	ranges = append(ranges, ScanRange{From: start, To: end})
+	return ranges
+}
+
+func scansComparedWith(baseline, records []ScanRecord, version int) []int {
+	result := []int{}
+	for _, record := range records {
+		if findRecord(baseline, record.Scan, version) != nil {
+			result = append(result, record.Scan)
+		}
+	}
+	return result
+}
+
+// AddReviewNote 为指定报告版本记录审阅说明。放弃分支仍允许补充说明，
+// 但说明只追加到报告审阅历史，不改变任何模拟或比较结果。
+func (m *BranchManager) AddReviewNote(branchID string, compareVersion int, text string) (*Branch, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, errors.New("审阅说明不能为空")
+	}
+	branch := m.findBranch(branchID)
+	if branch == nil {
+		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
+	}
+	if !m.branchHasReport(branch, compareVersion) {
+		return nil, fmt.Errorf("分支 %s 没有对照报告版本 #%d", branchID, compareVersion)
+	}
+	branch.ReviewNotes = append(branch.ReviewNotes, ReviewNote{
+		CompareVersion: compareVersion,
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Text:           text,
+	})
+	m.controller.addLog(fmt.Sprintf("分支 %s 的对照报告 #%d 已新增审阅说明", branch.ID, compareVersion))
+	return branch, nil
+}
+
+func (m *BranchManager) branchHasReport(branch *Branch, compareVersion int) bool {
+	if branch.Comparison != nil && branch.Comparison.CompareVersion == compareVersion {
+		return true
+	}
+	for _, report := range branch.Reports {
+		if report.CompareVersion == compareVersion {
+			return true
+		}
+	}
+	return false
+}
+
+// ExportReviewPackage 生成单个分支的自包含审阅包。包内同时放入当前报告、
+// 历史报告、实际扫描列表、缺失区间和当时冻结的对照记录，不依赖父分支仍可打开。
+func (m *BranchManager) ExportReviewPackage(branchID string) (*ReviewPackage, error) {
+	branch := m.findBranch(branchID)
+	if branch == nil {
+		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
+	}
+	if branch.Comparison == nil {
+		return nil, fmt.Errorf("分支 %s 尚无对照报告，不能导出审阅包", branchID)
+	}
+	reports := make([]Comparison, 0, len(branch.Reports)+1)
+	reports = append(reports, branch.Reports...)
+	reports = append(reports, *branch.Comparison)
+	sort.SliceStable(reports, func(i, j int) bool {
+		return reports[i].CompareVersion < reports[j].CompareVersion
+	})
+	notes := append([]ReviewNote{}, branch.ReviewNotes...)
+	pkg := &ReviewPackage{
+		Kind:          "branch-review-package",
+		FormatVersion: "1",
+		ExportedAt:    time.Now().Format(time.RFC3339),
+		Branch:        *branch,
+		CurrentReport: *branch.Comparison,
+		Reports:       reports,
+		ReviewNotes:   notes,
+	}
+	if boundary := m.findBoundary(branch.BoundaryID); boundary != nil {
+		copied := *boundary
+		pkg.Boundary = &copied
+	}
+	return pkg, nil
 }
 
 // RebaseComparison 在子分支上显式建立新的对照版本：把对照基线刷新为
@@ -477,7 +585,14 @@ func (m *BranchManager) RebaseComparison(branchID string) (*Branch, error) {
 		return nil, errors.New("父分支尚无模拟记录，不能作为对照基线")
 	}
 	if branch.Comparison != nil {
-		branch.Reports = append(branch.Reports, *branch.Comparison)
+		archived := *branch.Comparison
+		archived.CandidateRecords = cloneRecords(branch.Records)
+		archived.BaselineRecords = cloneRecords(branch.Baseline)
+		archived.MissingRanges = rangesFromScans(archived.MissingScans)
+		if len(archived.ComparedScanNumbers) == 0 {
+			archived.ComparedScanNumbers = scansComparedWith(branch.Baseline, branch.Records, branch.BaseVersion)
+		}
+		branch.Reports = append(branch.Reports, archived)
 	}
 	branch.Baseline = cloneRecords(parent.Records)
 	branch.BaselineInputVersion = parent.InputVersion
@@ -694,6 +809,7 @@ func (b Branch) MarshalJSON() ([]byte, error) {
 		CompareVersion       int                   `json:"compareVersion"`
 		Comparison           *Comparison           `json:"comparison,omitempty"`
 		Reports              []Comparison          `json:"reports"`
+		ReviewNotes          []ReviewNote          `json:"reviewNotes"`
 	}{
 		ID:           b.ID,
 		Name:         b.Name,
@@ -722,6 +838,7 @@ func (b Branch) MarshalJSON() ([]byte, error) {
 	alias.CompareVersion = b.CompareVersion
 	alias.Comparison = b.Comparison
 	alias.Reports = b.Reports
+	alias.ReviewNotes = b.ReviewNotes
 	if alias.Segment == nil {
 		alias.Segment = []map[string]bool{}
 	}
@@ -742,6 +859,9 @@ func (b Branch) MarshalJSON() ([]byte, error) {
 	}
 	if alias.Reports == nil {
 		alias.Reports = []Comparison{}
+	}
+	if alias.ReviewNotes == nil {
+		alias.ReviewNotes = []ReviewNote{}
 	}
 	return json.Marshal(alias)
 }
@@ -803,6 +923,9 @@ func (m *BranchManager) Load(path string) error {
 		if branch.Reports == nil {
 			branch.Reports = []Comparison{}
 		}
+		if branch.ReviewNotes == nil {
+			branch.ReviewNotes = []ReviewNote{}
+		}
 		if branch.Status == "" {
 			if len(branch.Records) > 0 {
 				branch.Status = branchStatusApplied
@@ -827,13 +950,25 @@ func (m *BranchManager) Load(path string) error {
 			branch.Comparison = m.compare(branch)
 			branch.Divergence = branch.Comparison.Divergence
 		}
-		if branch.Comparison != nil && branch.Comparison.MissingScans == nil {
-			branch.Comparison.MissingScans = []int{}
+		normalizeComparison := func(report *Comparison) {
+			if report.MissingScans == nil {
+				report.MissingScans = []int{}
+			}
+			if report.ComparedScanNumbers == nil {
+				report.ComparedScanNumbers = []int{}
+			}
+			if report.MissingRanges == nil {
+				report.MissingRanges = rangesFromScans(report.MissingScans)
+			}
+			if len(report.BaselineRecords) == 0 {
+				report.BaselineRecords = cloneRecords(branch.Baseline)
+			}
+		}
+		if branch.Comparison != nil {
+			normalizeComparison(branch.Comparison)
 		}
 		for i := range branch.Reports {
-			if branch.Reports[i].MissingScans == nil {
-				branch.Reports[i].MissingScans = []int{}
-			}
+			normalizeComparison(&branch.Reports[i])
 		}
 	}
 	return nil

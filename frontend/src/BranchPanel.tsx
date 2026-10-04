@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search } from 'lucide-react';
+import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search, Download, FolderOpen, Crosshair } from 'lucide-react';
 import { api } from './api';
-import type { Branch, Comparison, ControllerState, RowOrigin } from './types';
+import type { Branch, Comparison, ControllerState, ReviewNote, ReviewPackage, RowOrigin, ScanRecord } from './types';
 
 const SEGMENT_ROWS = 3;
 
@@ -143,6 +143,68 @@ function ComparisonPanel({ comparison, labelOf }: { comparison: Comparison; labe
   );
 }
 
+function rangesText(report: Comparison): string {
+  if (report.missingRanges.length === 0) return '无';
+  return report.missingRanges.map((range) => range.from === range.to ? `#${range.from}` : `#${range.from}-#${range.to}`).join(', ');
+}
+
+function formatRecord(record: ScanRecord | undefined, labelOf: (id: string) => string): string {
+  if (!record) return '缺失对照记录';
+  const outputs = Object.entries(record.outputs).filter(([, value]) => value).map(([id]) => labelOf(id)).join('、') || '无输出';
+  const timers = Object.entries(record.timers).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无定时器';
+  return `输出：${outputs}；定时状态：${timers}`;
+}
+
+function ScanLocator({ report, branch, labelOf }: { report: Comparison; branch: Branch; labelOf: (id: string) => string }) {
+  const initialScan = report.divergence?.scan ?? report.fromScan;
+  const [scan, setScan] = useState(initialScan);
+  const candidate = report.candidateRecords?.find((record) => record.scan === scan) ?? branch.records.find((record) => record.scan === scan);
+  const baseline = report.baselineRecords?.find((record) => record.scan === scan);
+  const isMissing = report.missingScans.includes(scan);
+  return (
+    <details className="scan-locator">
+      <summary><Crosshair size={13} />按扫描序号定位</summary>
+      <div className="locator-row">
+        <label>
+          扫描序号
+          <input type="number" value={scan} min={report.fromScan} max={report.toScan}
+            onChange={(event) => setScan(Number(event.target.value))} />
+        </label>
+        {report.divergence && <button onClick={() => setScan(report.divergence!.scan)}>跳到首次差异 #{report.divergence.scan}</button>}
+      </div>
+      <p className="branch-meta">实际比较扫描：{report.comparedScanNumbers.map((item) => `#${item}`).join(', ') || '无'}；缺失区间：{rangesText(report)}</p>
+      <p className="branch-meta">{isMissing && <b>该扫描缺少对照记录，不参与一致判断。</b>}</p>
+      <p className="branch-meta">候选分支：{formatRecord(candidate, labelOf)}</p>
+      <p className="branch-meta">历史对照：{formatRecord(baseline, labelOf)}</p>
+    </details>
+  );
+}
+
+function NoteForm({ branch, compareVersion, runAction }: { branch: Branch; compareVersion: number; runAction: Props['runAction'] }) {
+  const [text, setText] = useState('');
+  if (branch.status === 'abandoned') return null;
+  return (
+    <div className="note-form">
+      <textarea placeholder={`记录针对报告版本 #${compareVersion} 的审阅说明`} value={text}
+        onChange={(event) => setText(event.target.value)} />
+      <button disabled={!text.trim()} onClick={() => runAction(async () => {
+        const next = await api.addReviewNote(branch.id, compareVersion, text.trim());
+        setText('');
+        return next;
+      })}>保存说明</button>
+    </div>
+  );
+}
+
+function ReviewNotes({ notes }: { notes: ReviewNote[] }) {
+  if (notes.length === 0) return <p className="branch-meta">暂无审阅说明。</p>;
+  return <ul className="review-notes">{notes.map((note, index) => (
+    <li key={`${note.compareVersion}-${note.createdAt}-${index}`}>
+      <b>报告 #{note.compareVersion}</b><time>{note.createdAt}</time><span>{note.text}</span>
+    </li>
+  ))}</ul>;
+}
+
 function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Branch; runAction: Props['runAction'] }) {
   const restartable = branch.program.nodes.filter((node) => node.kind === 'TON' || node.kind === 'SR');
   const [nodeId, setNodeId] = useState(restartable[0]?.id ?? '');
@@ -169,7 +231,13 @@ function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Br
       {branch.status === 'created' && origins.length > 0 && (
         <p className="branch-meta">已继承父分支候选输入，可直接比较或继续替换。</p>
       )}
-      {branch.comparison && <ComparisonPanel comparison={branch.comparison} labelOf={labelOf} />}
+      {branch.comparison && (
+        <>
+          <ComparisonPanel comparison={branch.comparison} labelOf={labelOf} />
+          <ScanLocator report={branch.comparison} branch={branch} labelOf={labelOf} />
+          <NoteForm branch={branch} compareVersion={branch.comparison.compareVersion} runAction={runAction} />
+        </>
+      )}
       {branch.parentId && branch.status !== 'abandoned' && (
         <div className="rebase-row">
           {parent && parent.inputVersion !== (branch.comparison?.parentInputVersion ?? 0) && (
@@ -186,22 +254,19 @@ function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Br
       {(branch.reports ?? []).length > 0 && (
         <details className="origins">
           <summary>历史对照报告（{(branch.reports ?? []).length}）</summary>
-          <ul>
+          <div className="report-history">
             {(branch.reports ?? []).map((report) => (
-              <li key={report.compareVersion}>
-                对照版本 #{report.compareVersion} · 输入版本 #{report.inputVersion}
-                {report.parentInputVersion ? ` · 父分支输入版本 #${report.parentInputVersion}` : ''}
-                {' · '}
-                {report.status === 'diverged'
-                  ? `首次差异 @ 扫描 #${report.divergence?.scan}`
-                  : report.status === 'consistent'
-                    ? '确实一致'
-                    : '没有比较对象'}
-              </li>
+              <section key={report.compareVersion} className="historical-report">
+                <h4>历史对照版本 #{report.compareVersion}</h4>
+                <ComparisonPanel comparison={report} labelOf={labelOf} />
+                <ScanLocator report={report} branch={branch} labelOf={labelOf} />
+                <NoteForm branch={branch} compareVersion={report.compareVersion} runAction={runAction} />
+              </section>
             ))}
-          </ul>
+          </div>
         </details>
       )}
+      <ReviewNotes notes={branch.reviewNotes ?? []} />
       {notes.length > 0 && (
         <ul className="overlap-notes">
           {notes.map((note, index) => <li key={index}>{note}</li>)}
@@ -243,7 +308,35 @@ function BranchCard({ branch, parent, runAction }: { branch: Branch; parent?: Br
           <Ban size={14} />放弃此中间分支（记录保留）
         </button>
       )}
+      <a className="export-review" href={api.reviewPackageURL(branch.id)} download={`review-${branch.id}.json`}>
+        <Download size={14} />导出审阅包
+      </a>
     </div>
+  );
+}
+
+function ReviewPackageViewer({ pkg, onClose }: { pkg: ReviewPackage; onClose: () => void }) {
+  const branch = pkg.branch;
+  const labelOf = (id: string) => branch.program.nodes.find((node) => node.id === id)?.label ?? id;
+  return (
+    <section className="review-package-viewer">
+      <div className="review-package-head">
+        <h2><FolderOpen size={16} />已打开审阅包（独立快照）</h2>
+        <button onClick={onClose}>关闭审阅包</button>
+      </div>
+      <p className="branch-meta">
+        格式 {pkg.formatVersion} · 导出时间 {pkg.exportedAt} · {branch.name} · 状态 {branch.status}
+        {pkg.boundary ? ` · 边界 ${pkg.boundary.label} #${pkg.boundary.scan}/v${pkg.boundary.version}` : ''}
+      </p>
+      {[...pkg.reports].sort((a, b) => b.compareVersion - a.compareVersion).map((report) => (
+        <section key={report.compareVersion} className="historical-report">
+          <h3>{report.compareVersion === pkg.currentReport.compareVersion ? '当前报告' : `历史报告 #${report.compareVersion}`} #{report.compareVersion}</h3>
+          <ComparisonPanel comparison={report} labelOf={labelOf} />
+          <ScanLocator report={report} branch={branch} labelOf={labelOf} />
+          <ReviewNotes notes={(pkg.reviewNotes ?? []).filter((note) => note.compareVersion === report.compareVersion)} />
+        </section>
+      ))}
+    </section>
   );
 }
 
@@ -252,6 +345,8 @@ export function BranchPanel({ state, runAction }: Props) {
   const branches = state.branches ?? [];
   const [query, setQuery] = useState({ programVersion: '', inputVersion: '', scan: '' });
   const [found, setFound] = useState<{ branches: Branch[] } | null>(null);
+  const [reviewPackage, setReviewPackage] = useState<ReviewPackage | null>(null);
+  const [packageError, setPackageError] = useState('');
 
   const search = async () => {
     try {
@@ -274,9 +369,28 @@ export function BranchPanel({ state, runAction }: Props) {
   return (
     <section className="branches">
       <h2>扫描边界与试验分支</h2>
-      <button onClick={() => runAction(() => api.saveBoundary(''))}>
-        <BookmarkPlus size={14} />保存当前扫描边界（#{state.scanNumber}）
-      </button>
+      <div className="branch-toolbar">
+        <button onClick={() => runAction(() => api.saveBoundary(''))}>
+          <BookmarkPlus size={14} />保存当前扫描边界（#{state.scanNumber}）
+        </button>
+        <label className="package-open">
+          <FolderOpen size={14} />重新打开审阅包
+          <input type="file" accept="application/json,.json" onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+              setReviewPackage(await api.openReviewPackage(file));
+              setPackageError('');
+            } catch (err) {
+              setPackageError(err instanceof Error ? err.message : String(err));
+            } finally {
+              event.target.value = '';
+            }
+          }} />
+        </label>
+      </div>
+      {packageError && <p className="error">{packageError}</p>}
+      {reviewPackage && <ReviewPackageViewer pkg={reviewPackage} onClose={() => setReviewPackage(null)} />}
       <div className="trial-search">
         <Search size={14} />
         <input placeholder="程序版本" value={query.programVersion}

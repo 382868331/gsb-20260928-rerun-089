@@ -111,7 +111,8 @@ type Branch struct {
 	CompareVersion       int          `json:"compareVersion"`
 	Comparison           *Comparison  `json:"comparison,omitempty"`
 	// Reports 保存被新对照版本替换下来的旧对照报告，只读保留。
-	Reports []Comparison `json:"reports"`
+	Reports     []Comparison `json:"reports"`
+	ReviewNotes []ReviewNote `json:"reviewNotes"`
 }
 
 // RowOrigin 说明分支中某一扫描实际采用的输入来自哪里：
@@ -148,18 +149,48 @@ const (
 // 扫描范围，明确区分确实一致、存在真实差异和没有比较对象。
 // 候选输入或缺失记录不会被当作已执行扫描而误判为一致。
 type Comparison struct {
-	CompareVersion     int         `json:"compareVersion"`
-	Status             string      `json:"status"`
-	CompareTarget      string      `json:"compareTarget"`
-	ProgramVersion     int         `json:"programVersion"`
-	InputVersion       int         `json:"inputVersion"`
-	ParentInputVersion int         `json:"parentInputVersion,omitempty"`
-	FromScan           int         `json:"fromScan"`
-	ToScan             int         `json:"toScan"`
-	ComparedScans      int         `json:"comparedScans"`
-	MissingScans       []int       `json:"missingScans"`
-	Divergence         *Divergence `json:"divergence,omitempty"`
-	Message            string      `json:"message"`
+	CompareVersion      int          `json:"compareVersion"`
+	Status              string       `json:"status"`
+	CompareTarget       string       `json:"compareTarget"`
+	ProgramVersion      int          `json:"programVersion"`
+	InputVersion        int          `json:"inputVersion"`
+	ParentInputVersion  int          `json:"parentInputVersion,omitempty"`
+	FromScan            int          `json:"fromScan"`
+	ToScan              int          `json:"toScan"`
+	ComparedScans       int          `json:"comparedScans"`
+	ComparedScanNumbers []int        `json:"comparedScanNumbers"`
+	MissingScans        []int        `json:"missingScans"`
+	MissingRanges       []ScanRange  `json:"missingRanges"`
+	Divergence          *Divergence  `json:"divergence,omitempty"`
+	Message             string       `json:"message"`
+	CandidateRecords    []ScanRecord `json:"candidateRecords,omitempty"`
+	BaselineRecords     []ScanRecord `json:"baselineRecords,omitempty"`
+}
+
+// ScanRange 表示连续缺失对照记录的闭区间。
+type ScanRange struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
+// ReviewNote 是审阅者针对某个报告版本留下的说明。说明跟随报告快照导出，
+// 后续父分支更新或中间分支放弃均不会改写旧说明。
+type ReviewNote struct {
+	CompareVersion int    `json:"compareVersion"`
+	CreatedAt      string `json:"createdAt"`
+	Text           string `json:"text"`
+}
+
+// ReviewPackage 是单个分支某次审阅的自包含导出包。
+type ReviewPackage struct {
+	Kind          string       `json:"kind"`
+	FormatVersion string       `json:"formatVersion"`
+	ExportedAt    string       `json:"exportedAt"`
+	Branch        Branch       `json:"branch"`
+	Boundary      *Boundary    `json:"boundary,omitempty"`
+	CurrentReport Comparison   `json:"currentReport"`
+	Reports       []Comparison `json:"reports"`
+	ReviewNotes   []ReviewNote `json:"reviewNotes"`
 }
 
 type ScanEvent struct {

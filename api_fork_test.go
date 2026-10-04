@@ -24,7 +24,7 @@ func TestAPINewBranchNeverReturnsNullSlices(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, field := range []string{"\"segment\":[]", "\"records\":[]", "\"origins\":[]", "\"restarts\":[]", "\"overlapNotes\":[]"} {
+	for _, field := range []string{"\"segment\":[]", "\"records\":[]", "\"origins\":[]", "\"restarts\":[]", "\"overlapNotes\":[]", "\"baselineRecords\":[]", "\"reports\":[]"} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("新建分支 JSON 应包含 %s，实际：%s", field, text)
 		}

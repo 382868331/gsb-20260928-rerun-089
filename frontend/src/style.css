@@ -137,6 +137,29 @@ em { font-style: normal; font-size: 12px; color: #64748b; }
   color: #92400e;
   font-size: 12px;
 }
+.compare-none {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+}
+.compare-identical { color: #166534; }
+.compare-stale {
+  margin: 6px 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .segment-editor { margin-top: 8px; display: grid; gap: 8px; }
 .segment-editor label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 .segment-editor input[type='number'] { width: 80px; }

@@ -46,6 +46,7 @@ func main() {
 	mux.HandleFunc("POST /api/branches", server.handleBranchCreate)
 	mux.HandleFunc("POST /api/branches/{id}/fork", server.handleBranchFork)
 	mux.HandleFunc("POST /api/branches/{id}/abandon", server.handleBranchAbandon)
+	mux.HandleFunc("POST /api/branches/{id}/rebaseline", server.handleBranchRebaseline)
 	mux.HandleFunc("GET /api/trials", server.handleTrials)
 	mux.HandleFunc("PUT /api/branches/{id}/segment", server.handleBranchSegment)
 	mux.HandleFunc("POST /api/branches/{id}/restart", server.handleBranchRestart)
@@ -318,6 +319,22 @@ func (s *Server) handleBranchFork(writer http.ResponseWriter, request *http.Requ
 func (s *Server) handleBranchAbandon(writer http.ResponseWriter, request *http.Request) {
 	s.mu.Lock()
 	if _, err := s.branches.AbandonBranch(request.PathValue("id")); err != nil {
+		s.mu.Unlock()
+		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	state := s.controller.State()
+	s.attachBranches(&state)
+	s.persist()
+	s.mu.Unlock()
+	writeJSON(writer, http.StatusOK, state)
+}
+
+// handleBranchRebaseline 在父分支替换输入后，由用户显式为子分支
+// 建立新的对照版本（重新快照对照依据），旧对照报告全部保留。
+func (s *Server) handleBranchRebaseline(writer http.ResponseWriter, request *http.Request) {
+	s.mu.Lock()
+	if _, err := s.branches.Rebaseline(request.PathValue("id")); err != nil {
 		s.mu.Unlock()
 		http.Error(writer, err.Error(), http.StatusUnprocessableEntity)
 		return

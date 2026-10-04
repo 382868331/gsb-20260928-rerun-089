@@ -37,7 +37,10 @@ go run .
 - `POST /api/branches/{id}/fork` 在试验分支上继续派生子分支：派生点及之前的父分支输出是只读共同前缀；派生点之后父分支已模拟的候选输入默认继承，但每段都标注来源 `parent`（父分支模拟，非真实扫描）。
 - 子分支替换与父分支替换范围重叠时，`overlapNotes` 与逐扫描 `origins` 说明本次实际采用的输入及来源（`original` 原执行真实扫描 / `parent` 父分支模拟 / `self` 本分支替换）；未执行的候选片段不会出现在真实扫描记录中。
 - 子分支的首次输出差异与父分支记录比较，并报告差异扫描当时的内部保持状态（如 SR）与定时器累计（ElapsedMs/Q）；子分支结果绝不回写父分支或原执行。
-- `POST /api/branches/{id}/abandon` 放弃中间分支（有未放弃子分支时拒绝）；放弃后记录保留、只读。
+- `POST /api/branches/{id}/abandon` 放弃中间分支：转为不可再编辑的只读保留记录；已有后代的对照依据在派生时已固定为快照，可继续替换、派生与对照。
+- 比较面板明确区分三种结论：`diverged`（已比较，标出第一处可比较的真实输出差异及当时内部状态与定时累计）、`identical`（已比较且确实一致）、`no-baseline`（没有比较对象：原执行尚未覆盖该扫描范围，缺失记录不当作已执行扫描，也不判定一致）；部分扫描缺失时在 `missing` 中逐段列出。
+- 每次对照固定采用程序修订、对照方输入版本与对应扫描范围，生成一份 `CompareReport` 并全部保留（`reports`）。子分支的对照依据是派生时父分支记录的快照（`baselineRecords` + `baseInputVersion`），父分支后续替换输入不会悄悄改变它，只会把子分支标记为 `compareStale`。
+- `POST /api/branches/{id}/rebaseline` 在对照依据过期后由用户显式建立新的对照版本（重新快照父分支当前记录），旧报告保留；根分支对照原执行实时历史（只增不改），无需重建。
 - `GET /api/trials?programVersion=&inputVersion=&scan=` 可沿程序修订版本、输入版本与扫描序号找回各次试验（含已放弃分支）。
 - 新建分支的 `segment`/`records`/`origins`/`restarts`/`overlapNotes` 始终序列化为空数组而不是 `null`，前端另设错误边界，保存边界后建立分支不再因读取空值长度白屏。
 - 定时器跨分支起点时以边界累计为依据继续计时；`POST /api/branches/{id}/restart` 让用户在分支起点明确重新开始某个元件（定时累计或保持值清零），并留下永久记录。

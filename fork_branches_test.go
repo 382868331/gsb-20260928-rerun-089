@@ -145,7 +145,8 @@ func TestBranchStatusLifecycle(t *testing.T) {
 	if len(branch.Records) == 0 {
 		t.Fatal("放弃分支必须保留其扫描记录")
 	}
-	// 有未放弃的子分支时父分支不能放弃。
+	// 有未放弃子分支的中间分支也可以放弃：转为只读保留记录，
+	// 子分支的对照依据已固定为快照，可继续替换与对照。
 	controller2, _ := NewController(demoProgram())
 	manager2 := NewBranchManager(controller2)
 	controller2.Start()
@@ -154,14 +155,21 @@ func TestBranchStatusLifecycle(t *testing.T) {
 	p2, _ := manager2.CreateBranch(b2.ID, "p")
 	_, _ = manager2.ReplaceSegment(p2.ID, p2.BaseScan+1, []map[string]bool{{}})
 	c2, _ := manager2.ForkBranch(p2.ID, "", p2.BaseScan+1)
-	if _, err := manager2.AbandonBranch(p2.ID); err == nil {
-		t.Fatal("存在活子分支时父分支不能放弃")
-	}
-	if _, err := manager2.AbandonBranch(c2.ID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := manager2.AbandonBranch(p2.ID); err != nil {
-		t.Fatal("子分支放弃后父分支应可放弃")
+		t.Fatalf("中间分支有后代时也应可放弃（转为只读保留记录）: %v", err)
+	}
+	if p2.Status != branchStatusAbandoned || len(p2.Records) == 0 {
+		t.Fatal("放弃后中间分支应为只读保留记录且记录不丢失")
+	}
+	if _, err := manager2.ReplaceSegment(p2.ID, p2.BaseScan+1, []map[string]bool{{"stop": true}}); err == nil {
+		t.Fatal("放弃后的中间分支只读，不能再替换")
+	}
+	// 后代继续工作：子分支仍可替换输入并对照固定的快照依据。
+	if _, err := manager2.ReplaceSegment(c2.ID, c2.BaseScan+1, []map[string]bool{{"stop": true}}); err != nil {
+		t.Fatalf("父分支放弃后子分支应可继续替换: %v", err)
+	}
+	if c2.Status != branchStatusApplied || len(c2.Reports) == 0 {
+		t.Fatal("父分支放弃后子分支应仍有生效的模拟结果与对照报告")
 	}
 }
 

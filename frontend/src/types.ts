@@ -75,6 +75,21 @@ export interface Divergence {
   message: string;
 }
 
+export type CompareResult = 'diverged' | 'identical' | 'no-baseline';
+
+export interface CompareReport {
+  programVersion: number;
+  baseInputVersion: number;
+  branchInputVersion: number;
+  scanFrom: number;
+  scanTo: number;
+  compared: number;
+  missing: number[];
+  result: CompareResult;
+  divergence?: Divergence | null;
+  message: string;
+}
+
 export type RowSource = 'original' | 'parent' | 'self';
 
 export interface RowOrigin {
@@ -108,4 +123,8 @@ export interface Branch {
   restarts: Array<{ scan: number; message: string }>;
   overlapNotes: string[];
   divergence?: Divergence | null;
+  baseInputVersion: number;
+  baselineRecords: ScanRecord[];
+  reports: CompareReport[];
+  compareStale: boolean;
 }

@@ -82,6 +82,7 @@ func (m *BranchManager) CreateBranch(boundaryID, name string) (*Branch, error) {
 		Records:      []ScanRecord{},
 		Restarts:     []ScanEvent{},
 		OverlapNotes: []string{},
+		Reports:      []CompareReport{},
 	}
 	m.branches = append(m.branches, branch)
 	m.controller.addLog(fmt.Sprintf("已从边界 %s 建立试验分支 %s（版本 %d，扫描 #%d）",
@@ -142,6 +143,11 @@ func (m *BranchManager) ForkBranch(parentID, name string, forkScan int) (*Branch
 		Records:      []ScanRecord{},
 		Restarts:     []ScanEvent{},
 		OverlapNotes: []string{},
+		// 对照依据固定为派生时父分支的输入版本与已模拟记录快照；
+		// 父分支之后替换输入不会悄悄改变子分支的共同前缀与比较依据。
+		BaseInputVersion: parent.InputVersion,
+		BaselineRecords:  cloneRecords(parent.Records),
+		Reports:          []CompareReport{},
 	}
 	// 延续父分支派生点之后已经模拟出的候选输入段，来源标注为父分支模拟。
 	for _, record := range parent.Records {
@@ -171,7 +177,9 @@ func (m *BranchManager) ForkBranch(parentID, name string, forkScan int) (*Branch
 }
 
 // AbandonBranch 放弃一个中间分支：记录保留、只读，不再接受替换或派生，
-// 但不会删除任何扫描记录，也不影响其他分支与原执行。
+// 但不会删除任何扫描记录，也不影响其他分支与原执行。有子分支时同样
+// 可以放弃：子分支的共同前缀与对照依据在派生时已固定为快照，父分支
+// 转为只读保留记录后，已有后代仍可继续替换、派生与对照。
 func (m *BranchManager) AbandonBranch(branchID string) (*Branch, error) {
 	branch := m.findBranch(branchID)
 	if branch == nil {
@@ -180,13 +188,18 @@ func (m *BranchManager) AbandonBranch(branchID string) (*Branch, error) {
 	if branch.Status == branchStatusAbandoned {
 		return branch, nil
 	}
+	descendants := 0
 	for _, other := range m.branches {
-		if other.ParentID == branch.ID && other.Status != branchStatusAbandoned {
-			return nil, fmt.Errorf("分支 %s 仍有未放弃的子分支，不能放弃", branchID)
+		if other.ParentID == branch.ID {
+			descendants++
 		}
 	}
 	branch.Status = branchStatusAbandoned
-	branch.OverlapNotes = append(branch.OverlapNotes, fmt.Sprintf("该中间分支已被用户放弃（记录只读保留）"))
+	note := "该中间分支已被用户放弃（记录只读保留）"
+	if descendants > 0 {
+		note += fmt.Sprintf("；其 %d 个已派生后代的对照依据已固定为快照，可继续工作", descendants)
+	}
+	branch.OverlapNotes = append(branch.OverlapNotes, note)
 	m.controller.addLog(fmt.Sprintf("分支 %s 已放弃，历史记录保留", branch.ID))
 	return branch, nil
 }
@@ -256,6 +269,15 @@ func (m *BranchManager) ReplaceSegment(branchID string, fromScan int, inputs []m
 		return nil, err
 	}
 	branch.Status = branchStatusApplied
+	// 父分支替换输入后，已派生子分支的共同前缀与对照依据仍固定在
+	// 各自派生时的快照上，不随本次替换悄悄变化；明确标注这一点。
+	for _, other := range m.branches {
+		if other.ParentID == branch.ID && other.Status != branchStatusAbandoned {
+			branch.OverlapNotes = append(branch.OverlapNotes, fmt.Sprintf(
+				"子分支 %s 的对照依据仍固定在其派生时的输入版本 #%d 快照（当前父分支已为输入版本 #%d）；如需按新结果对照，请在子分支上显式建立新的对照版本",
+				other.Name, other.BaseInputVersion, branch.InputVersion))
+		}
+	}
 	m.controller.addLog(fmt.Sprintf("分支 %s 已替换自扫描 #%d 起的 %d 个扫描输入（输入版本 #%d）", branch.ID, fromScan, len(inputs), branch.InputVersion))
 	return branch, nil
 }
@@ -351,38 +373,89 @@ func (m *BranchManager) simulate(branch *Branch) error {
 		})
 	}
 	branch.Records = records
-	branch.Divergence = m.divergence(branch)
+	m.applyReport(branch)
 	return nil
 }
 
-// divergence 找到分支输出与原执行历史（同版本、同扫描序号）首次
-// 不一致的位置，并列出该位置涉及的内部状态。子分支则与父分支的
-// 模拟记录比较——子分支结果绝不接回原执行。
-func (m *BranchManager) divergence(branch *Branch) *Divergence {
-	var baselineName string
-	var baseline []ScanRecord
-	if branch.ParentID != "" {
-		if parent := m.findBranch(branch.ParentID); parent != nil {
-			baseline = parent.Records
-			baselineName = fmt.Sprintf("父分支 %s", parent.Name)
-		} else {
-			baselineName = "父分支（已不存在）"
-		}
-	} else {
-		baseline = m.controller.history
-		baselineName = "原执行"
+// Rebaseline 在父分支后续替换输入后，由用户显式为子分支建立新的
+// 对照版本：重新快照父分支当前记录并追加一份对照报告，旧报告保留。
+func (m *BranchManager) Rebaseline(branchID string) (*Branch, error) {
+	branch := m.findBranch(branchID)
+	if branch == nil {
+		return nil, fmt.Errorf("试验分支 %s 不存在", branchID)
 	}
+	if branch.Status == branchStatusAbandoned {
+		return nil, fmt.Errorf("分支 %s 已放弃，对照依据为只读历史，不能重建", branchID)
+	}
+	if branch.ParentID == "" {
+		return nil, errors.New("根分支对照原执行实时历史（只增不改），无需重建对照版本")
+	}
+	parent := m.findBranch(branch.ParentID)
+	if parent == nil {
+		return nil, fmt.Errorf("父分支 %s 已不存在，无法重建对照", branch.ParentID)
+	}
+	branch.BaselineRecords = cloneRecords(parent.Records)
+	branch.BaseInputVersion = parent.InputVersion
+	m.applyReport(branch)
+	m.controller.addLog(fmt.Sprintf("分支 %s 已显式建立新的对照版本（父分支输入版本 #%d），旧报告保留",
+		branch.ID, parent.InputVersion))
+	return branch, nil
+}
+
+// applyReport 按当前固定的对照依据生成一份对照报告并追加到历史，
+// 同时更新分支的最新差异字段。旧报告全部保留。
+func (m *BranchManager) applyReport(branch *Branch) {
+	report := m.compare(branch)
+	branch.Reports = append(branch.Reports, report)
+	branch.Divergence = report.Divergence
+}
+
+// baselineFor 返回分支固定的对照依据：子分支为派生/重建时父分支
+// 记录的快照（父分支之后替换输入不影响）；根分支为原执行实时历史
+// （只增不改，缺失记录不当作已执行扫描）。
+func (m *BranchManager) baselineFor(branch *Branch) ([]ScanRecord, string) {
+	if branch.ParentID != "" {
+		name := fmt.Sprintf("父分支 %s（输入版本 #%d 快照）", branch.ParentName, branch.BaseInputVersion)
+		if branch.BaselineRecords != nil {
+			return branch.BaselineRecords, name
+		}
+		if parent := m.findBranch(branch.ParentID); parent != nil {
+			return parent.Records, fmt.Sprintf("父分支 %s", parent.Name)
+		}
+		return nil, name
+	}
+	return m.controller.history, "原执行"
+}
+
+// compare 把分支记录与固定的对照依据（同程序修订、同扫描序号）逐扫描
+// 比较，标出第一处可比较的真实输出差异及当时内部状态与定时累计。
+// 对照依据缺失的扫描列为 missing：既不是已执行扫描，也不能据此判定一致。
+func (m *BranchManager) compare(branch *Branch) CompareReport {
+	baseline, baselineName := m.baselineFor(branch)
+	report := CompareReport{
+		ProgramVersion:     branch.BaseVersion,
+		BaseInputVersion:   branch.BaseInputVersion,
+		BranchInputVersion: branch.InputVersion,
+		Missing:            []int{},
+	}
+	if len(branch.Records) > 0 {
+		report.ScanFrom = branch.Records[0].Scan
+		report.ScanTo = branch.Records[len(branch.Records)-1].Scan
+	}
+	scope := fmt.Sprintf("程序版本 %d，扫描范围 #%d–#%d", report.ProgramVersion, report.ScanFrom, report.ScanTo)
 	for _, record := range branch.Records {
 		base := findRecord(baseline, record.Scan, branch.BaseVersion)
 		if base == nil {
+			report.Missing = append(report.Missing, record.Scan)
 			continue
 		}
+		report.Compared++
 		outputs := diffKeys(record.Outputs, base.Outputs)
 		internals := diffKeys(record.Internals, base.Internals)
 		if len(outputs) == 0 {
 			continue
 		}
-		return &Divergence{
+		divergence := &Divergence{
 			Scan:          record.Scan,
 			CompareTarget: baselineName,
 			Outputs:       outputs,
@@ -392,8 +465,57 @@ func (m *BranchManager) divergence(branch *Branch) *Divergence {
 			Message: fmt.Sprintf("与%s比较，扫描 #%d 输出首次出现差异：%s；当时内部状态：%s；定时累计：%s",
 				baselineName, record.Scan, joinOrNone(outputs), formatState(record.Internals), formatTimers(record.Timers)),
 		}
+		report.Result = CompareResultDiverged
+		report.Divergence = divergence
+		report.Message = fmt.Sprintf("%s（对照固定：%s）%s", divergence.Message, scope, missingNote(report.Missing))
+		return report
 	}
-	return nil
+	if report.Compared == 0 {
+		report.Result = CompareResultNoBaseline
+		report.Message = fmt.Sprintf("没有比较对象：%s 尚未覆盖扫描范围 #%d–#%d（%s）；缺失记录不视为已执行扫描，不能判定一致",
+			baselineName, report.ScanFrom, report.ScanTo, scope)
+		return report
+	}
+	report.Result = CompareResultIdentical
+	report.Message = fmt.Sprintf("与%s已比较且输出一致：%d 个扫描（%s）%s",
+		baselineName, report.Compared, scope, missingNote(report.Missing))
+	return report
+}
+
+func missingNote(missing []int) string {
+	if len(missing) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(missing))
+	for _, scan := range missing {
+		parts = append(parts, fmt.Sprintf("#%d", scan))
+	}
+	return fmt.Sprintf("；扫描 %s 没有比较对象（未执行的候选或缺失记录不当作已执行扫描）", strings.Join(parts, "、"))
+}
+
+// compareStale 判断父分支在子分支派生/重建对照后又替换了输入，
+// 此时子分支的对照依据（快照）已过期，需显式建立新的对照版本。
+func (m *BranchManager) compareStale(branch *Branch) bool {
+	if branch.ParentID == "" {
+		return false
+	}
+	parent := m.findBranch(branch.ParentID)
+	return parent != nil && parent.InputVersion != branch.BaseInputVersion
+}
+
+func cloneRecords(records []ScanRecord) []ScanRecord {
+	result := make([]ScanRecord, 0, len(records))
+	for _, record := range records {
+		result = append(result, ScanRecord{
+			Scan:      record.Scan,
+			Version:   record.Version,
+			Inputs:    cloneBools(record.Inputs),
+			Outputs:   cloneBools(record.Outputs),
+			Internals: cloneBools(record.Internals),
+			Timers:    cloneTimers(record.Timers),
+		})
+	}
+	return result
 }
 
 func formatState(state map[string]bool) string {
@@ -501,7 +623,9 @@ func (m *BranchManager) Boundaries() []Boundary {
 func (m *BranchManager) Branches() []Branch {
 	result := make([]Branch, 0, len(m.branches))
 	for _, branch := range m.branches {
-		result = append(result, *branch)
+		copy := *branch
+		copy.CompareStale = m.compareStale(branch)
+		result = append(result, copy)
 	}
 	return result
 }
@@ -531,7 +655,9 @@ func (m *BranchManager) FindTrials(programVersion, inputVersion, scan int) ([]Bo
 				continue
 			}
 		}
-		branches = append(branches, *branch)
+		copy := *branch
+		copy.CompareStale = m.compareStale(branch)
+		branches = append(branches, copy)
 		if !boundarySet[branch.BoundaryID] {
 			boundarySet[branch.BoundaryID] = true
 			if boundary := m.findBoundary(branch.BoundaryID); boundary != nil {
@@ -552,49 +678,57 @@ func (m *BranchManager) FindTrials(programVersion, inputVersion, scan int) ([]Bo
 // 刚创建、尚无结果的分支读取 null.length 时白屏。
 func (b Branch) MarshalJSON() ([]byte, error) {
 	alias := struct {
-		ID           string                `json:"id"`
-		Name         string                `json:"name"`
-		BoundaryID   string                `json:"boundaryId"`
-		ParentID     string                `json:"parentId,omitempty"`
-		ParentName   string                `json:"parentName,omitempty"`
-		ForkScan     int                   `json:"forkScan,omitempty"`
-		BaseScan     int                   `json:"baseScan"`
-		BaseVersion  int                   `json:"baseVersion"`
-		InputVersion int                   `json:"inputVersion"`
-		Status       string                `json:"status"`
-		ProgramName  string                `json:"programName"`
-		Program      Program               `json:"program"`
-		BaseInputs   map[string]bool       `json:"baseInputs"`
-		BaseValues   map[string]bool       `json:"baseValues"`
-		BaseTimers   map[string]TimerState `json:"baseTimers"`
-		Segment      []map[string]bool     `json:"segment"`
-		Origins      []RowOrigin           `json:"origins"`
-		Records      []ScanRecord          `json:"records"`
-		Restarts     []ScanEvent           `json:"restarts"`
-		OverlapNotes []string              `json:"overlapNotes"`
-		Divergence   *Divergence           `json:"divergence,omitempty"`
+		ID               string                `json:"id"`
+		Name             string                `json:"name"`
+		BoundaryID       string                `json:"boundaryId"`
+		ParentID         string                `json:"parentId,omitempty"`
+		ParentName       string                `json:"parentName,omitempty"`
+		ForkScan         int                   `json:"forkScan,omitempty"`
+		BaseScan         int                   `json:"baseScan"`
+		BaseVersion      int                   `json:"baseVersion"`
+		InputVersion     int                   `json:"inputVersion"`
+		Status           string                `json:"status"`
+		ProgramName      string                `json:"programName"`
+		Program          Program               `json:"program"`
+		BaseInputs       map[string]bool       `json:"baseInputs"`
+		BaseValues       map[string]bool       `json:"baseValues"`
+		BaseTimers       map[string]TimerState `json:"baseTimers"`
+		Segment          []map[string]bool     `json:"segment"`
+		Origins          []RowOrigin           `json:"origins"`
+		Records          []ScanRecord          `json:"records"`
+		Restarts         []ScanEvent           `json:"restarts"`
+		OverlapNotes     []string              `json:"overlapNotes"`
+		Divergence       *Divergence           `json:"divergence,omitempty"`
+		BaseInputVersion int                   `json:"baseInputVersion"`
+		BaselineRecords  []ScanRecord          `json:"baselineRecords"`
+		Reports          []CompareReport       `json:"reports"`
+		CompareStale     bool                  `json:"compareStale"`
 	}{
-		ID:           b.ID,
-		Name:         b.Name,
-		BoundaryID:   b.BoundaryID,
-		ParentID:     b.ParentID,
-		ParentName:   b.ParentName,
-		ForkScan:     b.ForkScan,
-		BaseScan:     b.BaseScan,
-		BaseVersion:  b.BaseVersion,
-		InputVersion: b.InputVersion,
-		Status:       b.Status,
-		ProgramName:  b.ProgramName,
-		Program:      b.Program,
-		BaseInputs:   b.BaseInputs,
-		BaseValues:   b.BaseValues,
-		BaseTimers:   b.BaseTimers,
-		Segment:      b.Segment,
-		Origins:      b.Origins,
-		Records:      b.Records,
-		Restarts:     b.Restarts,
-		OverlapNotes: b.OverlapNotes,
-		Divergence:   b.Divergence,
+		ID:               b.ID,
+		Name:             b.Name,
+		BoundaryID:       b.BoundaryID,
+		ParentID:         b.ParentID,
+		ParentName:       b.ParentName,
+		ForkScan:         b.ForkScan,
+		BaseScan:         b.BaseScan,
+		BaseVersion:      b.BaseVersion,
+		InputVersion:     b.InputVersion,
+		Status:           b.Status,
+		ProgramName:      b.ProgramName,
+		Program:          b.Program,
+		BaseInputs:       b.BaseInputs,
+		BaseValues:       b.BaseValues,
+		BaseTimers:       b.BaseTimers,
+		Segment:          b.Segment,
+		Origins:          b.Origins,
+		Records:          b.Records,
+		Restarts:         b.Restarts,
+		OverlapNotes:     b.OverlapNotes,
+		Divergence:       b.Divergence,
+		BaseInputVersion: b.BaseInputVersion,
+		BaselineRecords:  b.BaselineRecords,
+		Reports:          b.Reports,
+		CompareStale:     b.CompareStale,
 	}
 	if alias.Segment == nil {
 		alias.Segment = []map[string]bool{}
@@ -610,6 +744,17 @@ func (b Branch) MarshalJSON() ([]byte, error) {
 	}
 	if alias.OverlapNotes == nil {
 		alias.OverlapNotes = []string{}
+	}
+	if alias.BaselineRecords == nil {
+		alias.BaselineRecords = []ScanRecord{}
+	}
+	if alias.Reports == nil {
+		alias.Reports = []CompareReport{}
+	}
+	for i := range alias.Reports {
+		if alias.Reports[i].Missing == nil {
+			alias.Reports[i].Missing = []int{}
+		}
 	}
 	return json.Marshal(alias)
 }
@@ -665,12 +810,25 @@ func (m *BranchManager) Load(path string) error {
 		if branch.OverlapNotes == nil {
 			branch.OverlapNotes = []string{}
 		}
+		if branch.Reports == nil {
+			branch.Reports = []CompareReport{}
+		}
+		for i := range branch.Reports {
+			if branch.Reports[i].Missing == nil {
+				branch.Reports[i].Missing = []int{}
+			}
+		}
 		if branch.Status == "" {
 			if len(branch.Records) > 0 {
 				branch.Status = branchStatusApplied
 			} else {
 				branch.Status = branchStatusCreated
 			}
+		}
+		// 旧存储没有对照报告：按当前固定的对照依据补一份，
+		// 缺失的对照区间会明确标为没有比较对象，而不是视为一致。
+		if len(branch.Records) > 0 && len(branch.Reports) == 0 {
+			m.applyReport(branch)
 		}
 	}
 	return nil

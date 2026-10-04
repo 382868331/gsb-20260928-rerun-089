@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search } from 'lucide-react';
+import { GitBranch, BookmarkPlus, RotateCcw, FlaskConical, Share2, Ban, Search, RefreshCw } from 'lucide-react';
 import { api } from './api';
-import type { Branch, ControllerState, RowOrigin } from './types';
+import type { Branch, CompareReport, ControllerState, RowOrigin } from './types';
 
 const SEGMENT_ROWS = 3;
 
@@ -110,6 +110,35 @@ function ForkRow({ branch, runAction }: { branch: Branch; runAction: Props['runA
   );
 }
 
+// CompareResultView 明确区分三种对照结论：已比较且发现首处真实差异、
+// 已比较且确实一致、没有比较对象（缺失记录不当作已执行扫描）。
+function CompareResultView({ report, labelOf }: { report: CompareReport; labelOf: (id: string) => string }) {
+  if (report.result === 'no-baseline') {
+    return <p className="compare-none">{report.message}</p>;
+  }
+  if (report.result === 'identical') {
+    return <p className="branch-meta compare-identical">{report.message}</p>;
+  }
+  const divergence = report.divergence;
+  return (
+    <>
+      <p className="divergence">{report.message}</p>
+      {divergence && (
+        <>
+          <p className="branch-meta">
+            差异输出：{divergence.outputs.map(labelOf).join('、') || '无'}；
+            涉及内部状态：{divergence.internals.map(labelOf).join('、') || '无'}
+          </p>
+          <p className="branch-meta">
+            当时内部状态：{Object.entries(divergence.internalState ?? {}).map(([id, value]) => `${labelOf(id)}=${value ? '1' : '0'}`).join('，') || '无'}；
+            定时累计：{Object.entries(divergence.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无'}
+          </p>
+        </>
+      )}
+    </>
+  );
+}
+
 function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['runAction'] }) {
   const restartable = branch.program.nodes.filter((node) => node.kind === 'TON' || node.kind === 'SR');
   const [nodeId, setNodeId] = useState(restartable[0]?.id ?? '');
@@ -118,6 +147,8 @@ function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['r
   const records = branch.records ?? [];
   const restarts = branch.restarts ?? [];
   const notes = branch.overlapNotes ?? [];
+  const reports = branch.reports ?? [];
+  const latest = reports.length > 0 ? reports[reports.length - 1] : null;
 
   return (
     <div className={`branch-card ${branch.status === 'abandoned' ? 'abandoned' : ''}`}>
@@ -136,20 +167,31 @@ function BranchCard({ branch, runAction }: { branch: Branch; runAction: Props['r
       {branch.status === 'created' && origins.length > 0 && (
         <p className="branch-meta">已继承父分支候选输入，可直接比较或继续替换。</p>
       )}
-      {branch.divergence ? (
-        <>
-          <p className="divergence">{branch.divergence.message}</p>
-          <p className="branch-meta">
-            差异输出：{branch.divergence.outputs.map(labelOf).join('、') || '无'}；
-            涉及内部状态：{branch.divergence.internals.map(labelOf).join('、') || '无'}
-          </p>
-          <p className="branch-meta">
-            当时内部状态：{Object.entries(branch.divergence.internalState ?? {}).map(([id, value]) => `${labelOf(id)}=${value ? '1' : '0'}`).join('，') || '无'}；
-            定时累计：{Object.entries(branch.divergence.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? '1' : '0'}`).join('，') || '无'}
-          </p>
-        </>
+      {branch.compareStale && branch.status !== 'abandoned' && (
+        <p className="compare-stale">
+          父分支输入版本已更新，当前对照依据仍固定在输入版本 #{branch.baseInputVersion} 的快照。
+          <button onClick={() => runAction(() => api.rebaselineBranch(branch.id))}>
+            <RefreshCw size={14} />建立新的对照版本（保留旧报告）
+          </button>
+        </p>
+      )}
+      {latest ? (
+        <CompareResultView report={latest} labelOf={labelOf} />
       ) : (
-        branch.status === 'applied' && <p className="branch-meta">与{branch.parentId ? '父分支' : '原执行'}输出一致（已比较 {records.length} 个扫描）</p>
+        branch.status === 'applied' && <p className="branch-meta">已模拟 {records.length} 个扫描，尚无对照报告。</p>
+      )}
+      {reports.length > 1 && (
+        <details className="origins">
+          <summary>历次对照报告（{reports.length} 份，旧报告保留）</summary>
+          <ul>
+            {reports.map((report, index) => (
+              <li key={index}>
+                对照 #{index + 1}：{report.result === 'diverged' ? `首处差异 @#${report.divergence?.scan}` : report.result === 'identical' ? `已比较 ${report.compared} 段且一致` : '没有比较对象'}
+                （程序版本 {report.programVersion}，对照输入版本 #{report.baseInputVersion}，范围 #{report.scanFrom}–#{report.scanTo}）
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {notes.length > 0 && (
         <ul className="overlap-notes">
@@ -251,4 +293,3 @@ export function BranchPanel({ state, runAction }: Props) {
     </section>
   );
 }
-

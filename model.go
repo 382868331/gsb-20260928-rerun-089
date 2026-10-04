@@ -104,6 +104,17 @@ type Branch struct {
 	Restarts     []ScanEvent           `json:"restarts"`
 	OverlapNotes []string              `json:"overlapNotes"`
 	Divergence   *Divergence           `json:"divergence,omitempty"`
+	// BaseInputVersion 固定对照方（父分支）在派生/重建对照时的输入版本；
+	// 根分支对照原执行实时历史，该值为 0。
+	BaseInputVersion int `json:"baseInputVersion"`
+	// BaselineRecords 是派生时对父分支已模拟记录的快照，作为子分支的
+	// 对照依据；父分支之后替换输入不会悄悄改变它。
+	BaselineRecords []ScanRecord `json:"baselineRecords"`
+	// Reports 是历次对照报告（含旧报告），最新一份在末尾。
+	Reports []CompareReport `json:"reports"`
+	// CompareStale 为 true 表示父分支输入版本已更新，当前对照依据已过期，
+	// 需显式建立新的对照版本（旧报告保留）。
+	CompareStale bool `json:"compareStale"`
 }
 
 // RowOrigin 说明分支中某一扫描实际采用的输入来自哪里：
@@ -127,6 +138,29 @@ type Divergence struct {
 	InternalState map[string]bool       `json:"internalState"`
 	TimerState    map[string]TimerState `json:"timerState"`
 	Message       string                `json:"message"`
+}
+
+// 比较结果取值：已比较且发现首处差异 / 已比较且确实一致 / 没有比较对象。
+const (
+	CompareResultDiverged   = "diverged"
+	CompareResultIdentical  = "identical"
+	CompareResultNoBaseline = "no-baseline"
+)
+
+// CompareReport 是一次固定依据的对照报告：比较固定采用程序修订、
+// 对照方输入版本与对应扫描范围。缺失记录的扫描列为 missing，
+// 不当作已执行扫描，也不能据此判定一致。历次报告全部保留。
+type CompareReport struct {
+	ProgramVersion     int         `json:"programVersion"`
+	BaseInputVersion   int         `json:"baseInputVersion"`
+	BranchInputVersion int         `json:"branchInputVersion"`
+	ScanFrom           int         `json:"scanFrom"`
+	ScanTo             int         `json:"scanTo"`
+	Compared           int         `json:"compared"`
+	Missing            []int       `json:"missing"`
+	Result             string      `json:"result"`
+	Divergence         *Divergence `json:"divergence,omitempty"`
+	Message            string      `json:"message"`
 }
 
 type ScanEvent struct {

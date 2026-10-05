@@ -176,6 +176,8 @@ export interface ReviewPackage {
   currentReport: Comparison;
   historicalReports: Comparison[];
   comparedScans: ReviewScan[];
+  missingScans: ReviewScan[];
   missingIntervals: ScanInterval[];
+  bindingDescription: string;
   notes: ReviewNote[];
 }

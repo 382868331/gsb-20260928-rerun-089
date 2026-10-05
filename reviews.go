@@ -8,7 +8,7 @@ import (
 
 const (
 	reviewPackageKind    = "branch-review-package"
-	reviewPackageVersion = 1
+	reviewPackageVersion = 2
 	reviewScanCompared   = "compared"
 	reviewScanMissing    = "missing"
 )
@@ -17,26 +17,28 @@ const (
 // 实际参与比较的扫描、缺失区间和程序信息；父分支继续更新或中间层被放弃后，
 // 已导出的包仍可独立导入查看。
 type ReviewPackage struct {
-	Kind              string         `json:"kind"`
-	FormatVersion     int            `json:"formatVersion"`
-	ID                string         `json:"id"`
-	OriginalID        string         `json:"originalId,omitempty"`
-	BranchID          string         `json:"branchId"`
-	BranchName        string         `json:"branchName"`
-	BranchStatus      string         `json:"branchStatus"`
-	ParentID          string         `json:"parentId,omitempty"`
-	ParentName        string         `json:"parentName,omitempty"`
-	BaseScan          int            `json:"baseScan"`
-	ForkScan          int            `json:"forkScan,omitempty"`
-	ProgramVersion    int            `json:"programVersion"`
-	InputVersion      int            `json:"inputVersion"`
-	Program           Program        `json:"program"`
-	ExportedAt        string         `json:"exportedAt"`
-	CurrentReport     Comparison     `json:"currentReport"`
-	HistoricalReports []Comparison   `json:"historicalReports"`
-	ComparedScans     []ReviewScan   `json:"comparedScans"`
-	MissingIntervals  []ScanInterval `json:"missingIntervals"`
-	Notes             []ReviewNote   `json:"notes"`
+	Kind               string         `json:"kind"`
+	FormatVersion      int            `json:"formatVersion"`
+	ID                 string         `json:"id"`
+	OriginalID         string         `json:"originalId,omitempty"`
+	BranchID           string         `json:"branchId"`
+	BranchName         string         `json:"branchName"`
+	BranchStatus       string         `json:"branchStatus"`
+	ParentID           string         `json:"parentId,omitempty"`
+	ParentName         string         `json:"parentName,omitempty"`
+	BaseScan           int            `json:"baseScan"`
+	ForkScan           int            `json:"forkScan,omitempty"`
+	ProgramVersion     int            `json:"programVersion"`
+	InputVersion       int            `json:"inputVersion"`
+	Program            Program        `json:"program"`
+	ExportedAt         string         `json:"exportedAt"`
+	CurrentReport      Comparison     `json:"currentReport"`
+	HistoricalReports  []Comparison   `json:"historicalReports"`
+	ComparedScans      []ReviewScan   `json:"comparedScans"`
+	MissingScans       []ReviewScan   `json:"missingScans"`
+	MissingIntervals   []ScanInterval `json:"missingIntervals"`
+	BindingDescription string         `json:"bindingDescription"`
+	Notes              []ReviewNote   `json:"notes"`
 }
 
 type ReviewScan struct {
@@ -74,26 +76,29 @@ func (m *BranchManager) ExportReviewPackage(branchID string) (*ReviewPackage, er
 	}
 	baseline := m.reviewBaseline(branch)
 	pkg := &ReviewPackage{
-		Kind:              reviewPackageKind,
-		FormatVersion:     reviewPackageVersion,
-		ID:                m.allocID("review"),
-		BranchID:          branch.ID,
-		BranchName:        branch.Name,
-		BranchStatus:      branch.Status,
-		ParentID:          branch.ParentID,
-		ParentName:        branch.ParentName,
-		BaseScan:          branch.BaseScan,
-		ForkScan:          branch.ForkScan,
-		ProgramVersion:    branch.BaseVersion,
-		InputVersion:      branch.InputVersion,
-		Program:           branch.Program,
-		ExportedAt:        nowRFC3339(),
-		CurrentReport:     *branch.Comparison,
-		HistoricalReports: append([]Comparison{}, branch.Reports...),
-		ComparedScans:     buildReviewScans(branch, baseline),
-		MissingIntervals:  compressIntervals(branch.Comparison.MissingScans),
-		Notes:             []ReviewNote{},
+		Kind:               reviewPackageKind,
+		FormatVersion:      reviewPackageVersion,
+		ID:                 m.allocID("review"),
+		BranchID:           branch.ID,
+		BranchName:         branch.Name,
+		BranchStatus:       branch.Status,
+		ParentID:           branch.ParentID,
+		ParentName:         branch.ParentName,
+		BaseScan:           branch.BaseScan,
+		ForkScan:           branch.ForkScan,
+		ProgramVersion:     branch.BaseVersion,
+		InputVersion:       branch.InputVersion,
+		Program:            branch.Program,
+		ExportedAt:         nowRFC3339(),
+		CurrentReport:      *branch.Comparison,
+		HistoricalReports:  append([]Comparison{}, branch.Reports...),
+		ComparedScans:      buildComparedReviewScans(branch, baseline),
+		MissingScans:       buildMissingReviewScans(branch),
+		MissingIntervals:   compressIntervals(branch.Comparison.MissingScans),
+		BindingDescription: "审阅说明绑定到本包内的对照报告版本；scan 为 0 时说明适用于整份报告，否则只绑定该报告下的扫描序号。实际比较与缺失对照分开保存，缺失扫描不补写基线。",
+		Notes:              []ReviewNote{},
 	}
+	normalizeReviewPackage(pkg)
 	sort.SliceStable(pkg.HistoricalReports, func(i, j int) bool {
 		return pkg.HistoricalReports[i].CompareVersion > pkg.HistoricalReports[j].CompareVersion
 	})
@@ -105,7 +110,7 @@ func (m *BranchManager) ImportReviewPackage(pkg ReviewPackage) (*ReviewPackage, 
 	if pkg.Kind != reviewPackageKind {
 		return nil, fmt.Errorf("不是支持的分支审阅包类型：%s", pkg.Kind)
 	}
-	if pkg.FormatVersion != reviewPackageVersion {
+	if pkg.FormatVersion < 1 || pkg.FormatVersion > reviewPackageVersion {
 		return nil, fmt.Errorf("不支持的审阅包格式版本：%d", pkg.FormatVersion)
 	}
 	if pkg.BranchID == "" || pkg.BranchName == "" {
@@ -119,18 +124,29 @@ func (m *BranchManager) ImportReviewPackage(pkg ReviewPackage) (*ReviewPackage, 
 	}
 	pkg.OriginalID = pkg.ID
 	pkg.ID = m.allocID("review")
+	if pkg.FormatVersion == 1 {
+		migrateReviewPackageV1(&pkg)
+	}
+	pkg.FormatVersion = reviewPackageVersion
 	if pkg.HistoricalReports == nil {
 		pkg.HistoricalReports = []Comparison{}
 	}
 	if pkg.ComparedScans == nil {
 		pkg.ComparedScans = []ReviewScan{}
 	}
+	if pkg.MissingScans == nil {
+		pkg.MissingScans = []ReviewScan{}
+	}
 	if pkg.MissingIntervals == nil {
 		pkg.MissingIntervals = []ScanInterval{}
+	}
+	if pkg.BindingDescription == "" {
+		pkg.BindingDescription = "审阅说明绑定到本包内的对照报告版本；scan 为 0 时说明适用于整份报告，否则只绑定该报告下的扫描序号。实际比较与缺失对照分开保存，缺失扫描不补写基线。"
 	}
 	if pkg.Notes == nil {
 		pkg.Notes = []ReviewNote{}
 	}
+	normalizeReviewPackage(&pkg)
 	for i := range pkg.Notes {
 		if pkg.Notes[i].ID == "" {
 			pkg.Notes[i].ID = m.allocID("note")
@@ -157,7 +173,7 @@ func (m *BranchManager) AddReviewNote(reviewID string, compareVersion, scan int,
 	}
 	if scan != 0 {
 		found := false
-		for _, row := range pkg.ComparedScans {
+		for _, row := range append(append([]ReviewScan{}, pkg.ComparedScans...), pkg.MissingScans...) {
 			if row.Scan == scan {
 				found = true
 				break
@@ -203,7 +219,7 @@ func (m *BranchManager) reviewBaseline(branch *Branch) []ScanRecord {
 	return m.controller.history
 }
 
-func buildReviewScans(branch *Branch, baseline []ScanRecord) []ReviewScan {
+func buildComparedReviewScans(branch *Branch, baseline []ScanRecord) []ReviewScan {
 	result := make([]ReviewScan, 0, len(branch.Records))
 	firstDifference := 0
 	if branch.Comparison != nil && branch.Comparison.Divergence != nil {
@@ -211,24 +227,84 @@ func buildReviewScans(branch *Branch, baseline []ScanRecord) []ReviewScan {
 	}
 	for _, candidate := range branch.Records {
 		base := findRecord(baseline, candidate.Scan, branch.BaseVersion)
-		row := ReviewScan{
-			Scan:       candidate.Scan,
-			Candidate:  candidate,
-			TimerState: cloneTimers(candidate.Timers),
-		}
 		if base == nil {
-			row.Status = reviewScanMissing
-		} else {
-			row.Status = reviewScanCompared
-			baseCopy := *base
-			row.Baseline = &baseCopy
-			row.OutputDifferences = diffKeys(candidate.Outputs, base.Outputs)
-			row.InternalDifferences = diffKeys(candidate.Internals, base.Internals)
-			row.FirstOutputDifference = candidate.Scan == firstDifference
+			continue
+		}
+		baseCopy := cloneScanRecord(*base)
+		candidateCopy := cloneScanRecord(candidate)
+		row := ReviewScan{
+			Scan:                  candidateCopy.Scan,
+			Status:                reviewScanCompared,
+			Candidate:             candidateCopy,
+			Baseline:              &baseCopy,
+			OutputDifferences:     diffKeys(candidateCopy.Outputs, baseCopy.Outputs),
+			InternalDifferences:   diffKeys(candidateCopy.Internals, baseCopy.Internals),
+			FirstOutputDifference: candidateCopy.Scan == firstDifference,
+			TimerState:            cloneTimers(candidateCopy.Timers),
 		}
 		result = append(result, row)
 	}
 	return result
+}
+
+func buildMissingReviewScans(branch *Branch) []ReviewScan {
+	missing := map[int]bool{}
+	for _, scan := range branch.Comparison.MissingScans {
+		missing[scan] = true
+	}
+	result := make([]ReviewScan, 0, len(missing))
+	for _, candidate := range branch.Records {
+		if !missing[candidate.Scan] {
+			continue
+		}
+		candidateCopy := cloneScanRecord(candidate)
+		result = append(result, ReviewScan{
+			Scan:                candidateCopy.Scan,
+			Status:              reviewScanMissing,
+			Candidate:           candidateCopy,
+			OutputDifferences:   []string{},
+			InternalDifferences: []string{},
+			TimerState:          cloneTimers(candidateCopy.Timers),
+		})
+	}
+	return result
+}
+
+func cloneScanRecord(record ScanRecord) ScanRecord {
+	return ScanRecord{
+		Scan:      record.Scan,
+		Version:   record.Version,
+		Inputs:    cloneBools(record.Inputs),
+		Outputs:   cloneBools(record.Outputs),
+		Internals: cloneBools(record.Internals),
+		Timers:    cloneTimers(record.Timers),
+	}
+}
+
+func migrateReviewPackageV1(pkg *ReviewPackage) {
+	missing := pkg.MissingScans
+	compared := make([]ReviewScan, 0, len(pkg.ComparedScans))
+	for _, row := range pkg.ComparedScans {
+		if row.Status == reviewScanMissing {
+			row.Baseline = nil
+			row.OutputDifferences = []string{}
+			row.InternalDifferences = []string{}
+			row.FirstOutputDifference = false
+			missing = append(missing, row)
+			continue
+		}
+		row.Status = reviewScanCompared
+		compared = append(compared, row)
+	}
+	pkg.ComparedScans = compared
+	pkg.MissingScans = missing
+	if len(pkg.MissingIntervals) == 0 {
+		scans := make([]int, 0, len(pkg.MissingScans))
+		for _, row := range pkg.MissingScans {
+			scans = append(scans, row.Scan)
+		}
+		pkg.MissingIntervals = compressIntervals(scans)
+	}
 }
 
 func compressIntervals(scans []int) []ScanInterval {
@@ -256,19 +332,91 @@ func nowRFC3339() string {
 }
 
 func normalizeReviewPackage(pkg *ReviewPackage) {
+	if pkg.Program.Nodes == nil {
+		pkg.Program.Nodes = []Node{}
+	}
+	if pkg.Program.Edges == nil {
+		pkg.Program.Edges = []Edge{}
+	}
+	normalizeComparison(&pkg.CurrentReport)
+	for i := range pkg.HistoricalReports {
+		normalizeComparison(&pkg.HistoricalReports[i])
+	}
 	if pkg.HistoricalReports == nil {
 		pkg.HistoricalReports = []Comparison{}
 	}
 	if pkg.ComparedScans == nil {
 		pkg.ComparedScans = []ReviewScan{}
 	}
+	if pkg.MissingScans == nil {
+		pkg.MissingScans = []ReviewScan{}
+	}
 	if pkg.MissingIntervals == nil {
 		pkg.MissingIntervals = []ScanInterval{}
+	}
+	if pkg.BindingDescription == "" {
+		pkg.BindingDescription = "审阅说明绑定到本包内的对照报告版本；scan 为 0 时说明适用于整份报告，否则只绑定该报告下的扫描序号。实际比较与缺失对照分开保存，缺失扫描不补写基线。"
 	}
 	if pkg.Notes == nil {
 		pkg.Notes = []ReviewNote{}
 	}
-	if pkg.CurrentReport.MissingScans == nil {
-		pkg.CurrentReport.MissingScans = []int{}
+	for i := range pkg.ComparedScans {
+		normalizeReviewScan(&pkg.ComparedScans[i], reviewScanCompared)
+	}
+	for i := range pkg.MissingScans {
+		normalizeReviewScan(&pkg.MissingScans[i], reviewScanMissing)
+	}
+}
+
+func normalizeComparison(report *Comparison) {
+	if report.MissingScans == nil {
+		report.MissingScans = []int{}
+	}
+	if report.Divergence != nil {
+		if report.Divergence.Outputs == nil {
+			report.Divergence.Outputs = []string{}
+		}
+		if report.Divergence.Internals == nil {
+			report.Divergence.Internals = []string{}
+		}
+		if report.Divergence.InternalState == nil {
+			report.Divergence.InternalState = map[string]bool{}
+		}
+		if report.Divergence.TimerState == nil {
+			report.Divergence.TimerState = map[string]TimerState{}
+		}
+	}
+}
+
+func normalizeReviewScan(row *ReviewScan, status string) {
+	if row.Status != reviewScanCompared && row.Status != reviewScanMissing {
+		row.Status = status
+	}
+	if row.Candidate.Inputs == nil {
+		row.Candidate.Inputs = map[string]bool{}
+	}
+	if row.Candidate.Outputs == nil {
+		row.Candidate.Outputs = map[string]bool{}
+	}
+	if row.Candidate.Internals == nil {
+		row.Candidate.Internals = map[string]bool{}
+	}
+	if row.Candidate.Timers == nil {
+		row.Candidate.Timers = map[string]TimerState{}
+	}
+	if row.TimerState == nil {
+		row.TimerState = map[string]TimerState{}
+	}
+	if row.OutputDifferences == nil {
+		row.OutputDifferences = []string{}
+	}
+	if row.InternalDifferences == nil {
+		row.InternalDifferences = []string{}
+	}
+	if row.Status == reviewScanMissing {
+		row.Baseline = nil
+		row.OutputDifferences = []string{}
+		row.InternalDifferences = []string{}
+		row.FirstOutputDifference = false
 	}
 }

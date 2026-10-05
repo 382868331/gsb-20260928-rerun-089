@@ -7,6 +7,55 @@ type Props = {
   runAction: <T>(action: () => Promise<T>) => Promise<T | false>;
 };
 
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return value ?? [];
+}
+
+function normalizePackage(reviewPackage: ReviewPackage): ReviewPackage {
+  const program = reviewPackage.program ?? {
+    name: '',
+    nodes: [],
+    edges: [],
+  };
+  return {
+    ...reviewPackage,
+    program: {
+      ...program,
+      nodes: asArray(program.nodes),
+      edges: asArray(program.edges),
+    },
+    currentReport: {
+      ...reviewPackage.currentReport,
+      missingScans: asArray(reviewPackage.currentReport?.missingScans),
+      divergence: reviewPackage.currentReport?.divergence ?? null,
+    },
+    historicalReports: asArray(reviewPackage.historicalReports).map((report) => ({
+      ...report,
+      missingScans: asArray(report.missingScans),
+      divergence: report.divergence ?? null,
+    })),
+    comparedScans: asArray(reviewPackage.comparedScans).map((row) => ({
+      ...row,
+      status: 'compared' as const,
+      outputDifferences: asArray(row.outputDifferences),
+      internalDifferences: asArray(row.internalDifferences),
+      timerState: row.timerState ?? {},
+    })),
+    missingScans: asArray(reviewPackage.missingScans).map((row) => ({
+      ...row,
+      status: 'missing' as const,
+      baseline: null,
+      outputDifferences: [],
+      internalDifferences: [],
+      firstOutputDifference: false,
+      timerState: row.timerState ?? {},
+    })),
+    missingIntervals: asArray(reviewPackage.missingIntervals),
+    bindingDescription: reviewPackage.bindingDescription || '审阅说明绑定到本包内的对照报告版本；缺失扫描不补写基线。',
+    notes: asArray(reviewPackage.notes),
+  };
+}
+
 export function downloadReviewPackage(pkg: ReviewPackage) {
   const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -18,15 +67,16 @@ export function downloadReviewPackage(pkg: ReviewPackage) {
 }
 
 function ReportSummary({ report }: { report: Comparison }) {
-  const status = report.status === 'diverged' ? '存在差异' : report.status === 'consistent' ? '确实一致' : '缺少对照';
+  const safeReport = { ...report, missingScans: asArray(report.missingScans) };
+  const status = safeReport.status === 'diverged' ? '存在差异' : safeReport.status === 'consistent' ? '确实一致' : '缺少对照';
   return (
-    <div className={`comparison-panel ${report.status}`}>
-      <b>对照版本 #{report.compareVersion}</b> · {status} · 输入版本 #{report.inputVersion}
-      {report.parentInputVersion ? ` · 父输入版本 #${report.parentInputVersion}` : ''}
-      {' · '}#{report.fromScan}-#{report.toScan} · 已比较 {report.comparedScans}
-      {report.divergence ? ` · 首次差异 #${report.divergence.scan}` : ''}
-      {report.missingScans.length > 0 ? ` · 缺失 ${report.missingScans.length}` : ''}
-      <p className="branch-meta">{report.message}</p>
+    <div className={`comparison-panel ${safeReport.status}`}>
+      <b>对照版本 #{safeReport.compareVersion}</b> · {status} · 输入版本 #{safeReport.inputVersion}
+      {safeReport.parentInputVersion ? ` · 父输入版本 #${safeReport.parentInputVersion}` : ''}
+      {' · '}#{safeReport.fromScan}-#{safeReport.toScan} · 已比较 {safeReport.comparedScans}
+      {safeReport.divergence ? ` · 首次差异 #${safeReport.divergence.scan}` : ''}
+      {safeReport.missingScans.length > 0 ? ` · 缺失 ${safeReport.missingScans.length}` : ''}
+      <p className="branch-meta">{safeReport.message}</p>
     </div>
   );
 }
@@ -36,25 +86,27 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
   runAction: Props['runAction'];
   refresh: () => Promise<void>;
 }) {
-  const [compareVersion, setCompareVersion] = useState(reviewPackage.currentReport.compareVersion);
-  const [scan, setScan] = useState(reviewPackage.currentReport.divergence?.scan ?? reviewPackage.comparedScans[0]?.scan ?? 0);
+  const pkg = normalizePackage(reviewPackage);
+  const [compareVersion, setCompareVersion] = useState(pkg.currentReport.compareVersion);
+  const [scan, setScan] = useState(pkg.currentReport.divergence?.scan ?? pkg.comparedScans[0]?.scan ?? pkg.missingScans[0]?.scan ?? 0);
   const [text, setText] = useState('');
-  const labelOf = (id: string) => reviewPackage.program.nodes.find((node) => node.id === id)?.label ?? id;
+  const labelOf = (id: string) => pkg.program.nodes.find((node) => node.id === id)?.label ?? id;
   const selectedReport = useMemo(
-    () => [reviewPackage.currentReport, ...reviewPackage.historicalReports].find((report) => report.compareVersion === compareVersion),
-    [compareVersion, reviewPackage],
+    () => [pkg.currentReport, ...pkg.historicalReports].find((report) => report.compareVersion === compareVersion),
+    [compareVersion, pkg],
   );
-  const selectedScan = reviewPackage.comparedScans.find((row) => row.scan === scan);
-  const notes = reviewPackage.notes.filter((note) => note.compareVersion === compareVersion && (!note.scan || note.scan === scan || !scan));
+  const allScans = [...pkg.comparedScans, ...pkg.missingScans];
+  const selectedScan = allScans.find((row) => row.scan === scan);
+  const notes = pkg.notes.filter((note) => note.compareVersion === compareVersion && (!note.scan || note.scan === scan || !scan));
   const selectReport = (version: number) => {
     setCompareVersion(version);
-    const report = [reviewPackage.currentReport, ...reviewPackage.historicalReports].find((item) => item.compareVersion === version);
+    const report = [pkg.currentReport, ...pkg.historicalReports].find((item) => item.compareVersion === version);
     if (report?.divergence) setScan(report.divergence.scan);
   };
 
   const submitNote = async () => {
     if (!text.trim()) return;
-    await runAction(() => api.addReviewNote(reviewPackage.id, compareVersion, scan, text.trim()));
+    await runAction(() => api.addReviewNote(pkg.id, compareVersion, scan, text.trim()));
     setText('');
     await refresh();
   };
@@ -62,21 +114,24 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
   return (
     <details className="review-package">
       <summary>
-        <FileArchive size={14} />{reviewPackage.branchName} · 当前对照 #{reviewPackage.currentReport.compareVersion}
-        {' · '}{reviewPackage.comparedScans.length} 个扫描 · {reviewPackage.notes.length} 条说明
+        <FileArchive size={14} />{pkg.branchName} · 当前对照 #{pkg.currentReport.compareVersion}
+        {' · '}{pkg.comparedScans.length} 个实际比较 · {pkg.missingScans.length} 个缺失 · {pkg.notes.length} 条说明
       </summary>
       <p className="branch-meta">
-        {reviewPackage.branchStatus === 'abandoned' ? '导出后中间层已放弃，包仍独立可读。' : '自包含快照，不依赖当前父分支。'}
-        {' '}程序版本 {reviewPackage.programVersion} · 分支输入版本 #{reviewPackage.inputVersion} · 导出 {new Date(reviewPackage.exportedAt).toLocaleString()}
+        {pkg.branchStatus === 'abandoned' ? '导出后中间层已放弃，包仍独立可读。' : '自包含快照，不依赖当前父分支。'}
+        {' '}程序版本 {pkg.programVersion} · 分支输入版本 #{pkg.inputVersion} · 导出 {new Date(pkg.exportedAt).toLocaleString()}
       </p>
-      <ReportSummary report={reviewPackage.currentReport} />
-      {reviewPackage.historicalReports.map((report) => <ReportSummary key={report.compareVersion} report={report} />)}
-      <p className="branch-meta">缺失区间：{reviewPackage.missingIntervals.map((interval) => `#${interval.fromScan}-#${interval.toScan}`).join('，') || '无'}</p>
+      <p className="branch-meta">{pkg.bindingDescription}</p>
+      <ReportSummary report={pkg.currentReport} />
+      {pkg.historicalReports.map((report) => <ReportSummary key={report.compareVersion} report={report} />)}
+      <p className="branch-meta">实际比较扫描：{pkg.comparedScans.map((row) => `#${row.scan}`).join('，') || '无'}</p>
+      <p className="branch-meta">缺失扫描：{pkg.missingScans.map((row) => `#${row.scan}`).join('，') || '无'}</p>
+      <p className="branch-meta">缺失区间：{pkg.missingIntervals.map((interval) => `#${interval.fromScan}-#${interval.toScan}`).join('，') || '无'}</p>
 
       <div className="review-controls">
         <label>报告版本
           <select value={compareVersion} onChange={(event) => selectReport(Number(event.target.value))}>
-            {[reviewPackage.currentReport, ...reviewPackage.historicalReports].map((report) => (
+            {[pkg.currentReport, ...pkg.historicalReports].map((report) => (
               <option key={report.compareVersion} value={report.compareVersion}>#{report.compareVersion}</option>
             ))}
           </select>
@@ -85,7 +140,7 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
           <input type="number" value={scan} onChange={(event) => setScan(Number(event.target.value))} />
         </label>
           <button onClick={() => selectedReport?.divergence && setScan(selectedReport.divergence.scan)} disabled={!selectedReport?.divergence}>定位首次差异</button>
-        <button onClick={() => downloadReviewPackage(reviewPackage)}><Download size={14} />再次导出</button>
+        <button onClick={() => downloadReviewPackage(pkg)}><Download size={14} />再次导出</button>
       </div>
 
       {selectedReport && <ReportSummary report={selectedReport} />}
@@ -96,7 +151,7 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
             <span className="status-badge applied">首次输出差异</span>
           )}
           <p className="branch-meta">
-            输出差异：{selectedScan.outputDifferences.map(labelOf).join('、') || '无'}；
+            {selectedScan.status === 'compared' ? `输出差异：${selectedScan.outputDifferences.map(labelOf).join('、') || '无'}；` : '该扫描没有发生对照，不补写基线；'}
             定时状态：{Object.entries(selectedScan.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? 1 : 0}`).join('，') || '无'}
           </p>
         </div>
@@ -109,7 +164,7 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
         <MessageSquareText size={14} />保存说明
       </button>
       <ul className="review-notes">
-        {notes.map((note) => <li key={note.id}>{note.scan ? `#${note.scan} · ` : ''}{note.text}</li>)}
+        {notes.map((note) => <li key={note.id}>报告 #{note.compareVersion}{note.scan ? ` / #${note.scan}` : ' / 整份报告'} · {note.text}</li>)}
       </ul>
     </details>
   );

@@ -94,6 +94,7 @@ func (m *BranchManager) ExportReviewPackage(branchID string) (*ReviewPackage, er
 		MissingIntervals:  compressIntervals(branch.Comparison.MissingScans),
 		Notes:             []ReviewNote{},
 	}
+	normalizeReviewPackage(pkg)
 	sort.SliceStable(pkg.HistoricalReports, func(i, j int) bool {
 		return pkg.HistoricalReports[i].CompareVersion > pkg.HistoricalReports[j].CompareVersion
 	})
@@ -119,18 +120,7 @@ func (m *BranchManager) ImportReviewPackage(pkg ReviewPackage) (*ReviewPackage, 
 	}
 	pkg.OriginalID = pkg.ID
 	pkg.ID = m.allocID("review")
-	if pkg.HistoricalReports == nil {
-		pkg.HistoricalReports = []Comparison{}
-	}
-	if pkg.ComparedScans == nil {
-		pkg.ComparedScans = []ReviewScan{}
-	}
-	if pkg.MissingIntervals == nil {
-		pkg.MissingIntervals = []ScanInterval{}
-	}
-	if pkg.Notes == nil {
-		pkg.Notes = []ReviewNote{}
-	}
+	normalizeReviewPackage(&pkg)
 	for i := range pkg.Notes {
 		if pkg.Notes[i].ID == "" {
 			pkg.Notes[i].ID = m.allocID("note")
@@ -218,6 +208,8 @@ func buildReviewScans(branch *Branch, baseline []ScanRecord) []ReviewScan {
 		}
 		if base == nil {
 			row.Status = reviewScanMissing
+			row.OutputDifferences = []string{}
+			row.InternalDifferences = []string{}
 		} else {
 			row.Status = reviewScanCompared
 			baseCopy := *base
@@ -225,6 +217,15 @@ func buildReviewScans(branch *Branch, baseline []ScanRecord) []ReviewScan {
 			row.OutputDifferences = diffKeys(candidate.Outputs, base.Outputs)
 			row.InternalDifferences = diffKeys(candidate.Internals, base.Internals)
 			row.FirstOutputDifference = candidate.Scan == firstDifference
+		}
+		if row.OutputDifferences == nil {
+			row.OutputDifferences = []string{}
+		}
+		if row.InternalDifferences == nil {
+			row.InternalDifferences = []string{}
+		}
+		if row.TimerState == nil {
+			row.TimerState = map[string]TimerState{}
 		}
 		result = append(result, row)
 	}
@@ -270,5 +271,42 @@ func normalizeReviewPackage(pkg *ReviewPackage) {
 	}
 	if pkg.CurrentReport.MissingScans == nil {
 		pkg.CurrentReport.MissingScans = []int{}
+	}
+	normalizeComparison(&pkg.CurrentReport)
+	for i := range pkg.HistoricalReports {
+		normalizeComparison(&pkg.HistoricalReports[i])
+	}
+	for i := range pkg.ComparedScans {
+		row := &pkg.ComparedScans[i]
+		if row.OutputDifferences == nil {
+			row.OutputDifferences = []string{}
+		}
+		if row.InternalDifferences == nil {
+			row.InternalDifferences = []string{}
+		}
+		if row.TimerState == nil {
+			row.TimerState = map[string]TimerState{}
+		}
+	}
+}
+
+func normalizeComparison(report *Comparison) {
+	if report.MissingScans == nil {
+		report.MissingScans = []int{}
+	}
+	if report.Divergence == nil {
+		return
+	}
+	if report.Divergence.Outputs == nil {
+		report.Divergence.Outputs = []string{}
+	}
+	if report.Divergence.Internals == nil {
+		report.Divergence.Internals = []string{}
+	}
+	if report.Divergence.InternalState == nil {
+		report.Divergence.InternalState = map[string]bool{}
+	}
+	if report.Divergence.TimerState == nil {
+		report.Divergence.TimerState = map[string]TimerState{}
 	}
 }

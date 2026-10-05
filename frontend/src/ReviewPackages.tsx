@@ -25,7 +25,7 @@ function ReportSummary({ report }: { report: Comparison }) {
       {report.parentInputVersion ? ` · 父输入版本 #${report.parentInputVersion}` : ''}
       {' · '}#{report.fromScan}-#{report.toScan} · 已比较 {report.comparedScans}
       {report.divergence ? ` · 首次差异 #${report.divergence.scan}` : ''}
-      {report.missingScans.length > 0 ? ` · 缺失 ${report.missingScans.length}` : ''}
+      {(report.missingScans ?? []).length > 0 ? ` · 缺失 ${report.missingScans.length}` : ''}
       <p className="branch-meta">{report.message}</p>
     </div>
   );
@@ -96,7 +96,7 @@ function ReviewPackageCard({ reviewPackage, runAction, refresh }: {
             <span className="status-badge applied">首次输出差异</span>
           )}
           <p className="branch-meta">
-            输出差异：{selectedScan.outputDifferences.map(labelOf).join('、') || '无'}；
+            输出差异：{(selectedScan.outputDifferences ?? []).map(labelOf).join('、') || '无'}；
             定时状态：{Object.entries(selectedScan.timerState ?? {}).map(([id, timer]) => `${labelOf(id)} ${timer.elapsedMs}ms/Q=${timer.q ? 1 : 0}`).join('，') || '无'}
           </p>
         </div>
